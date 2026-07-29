@@ -1,0 +1,7 @@
+.zig-cache/
+zig-out/
+libparsers.dylib
+libparsers.so
+lalrpop-bench/target/
+datasets/*.json
+benchmark_results/

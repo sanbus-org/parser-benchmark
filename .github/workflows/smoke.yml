@@ -1,0 +1,36 @@
+name: Smoke test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository and parser dependencies
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bison flex clang cargo
+
+      - name: Run benchmark smoke test
+        run: |
+          smoke_input="$RUNNER_TEMP/parser-benchmark-smoke.json"
+          printf '%s\n' '{"array": [true, false, null, 0]}' > "$smoke_input"
+          zig build -Doptimize=ReleaseFast run -- "$smoke_input"

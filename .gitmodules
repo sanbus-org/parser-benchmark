@@ -1,0 +1,12 @@
+[submodule "rapidjson"]
+	path = rapidjson
+	url = https://github.com/Tencent/rapidjson.git
+[submodule "tree-sitter"]
+	path = tree-sitter
+	url = https://github.com/tree-sitter/tree-sitter.git
+[submodule "tree-sitter-json"]
+	path = tree-sitter-json
+	url = https://github.com/tree-sitter/tree-sitter-json.git
+[submodule "simdjson"]
+	path = simdjson
+	url = https://github.com/simdjson/simdjson.git
