@@ -10,3 +10,9 @@
 [submodule "simdjson"]
 	path = simdjson
 	url = https://github.com/simdjson/simdjson.git
+[submodule "yyjson"]
+	path = yyjson
+	url = https://github.com/ibireme/yyjson.git
+[submodule "galley"]
+	path = galley
+	url = https://github.com/sanbus-org/galley.git

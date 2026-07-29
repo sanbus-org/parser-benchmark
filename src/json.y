@@ -44,36 +44,63 @@ typedef struct AdvancedASTNode {
     NodePayload payload;
 } AdvancedASTNode;
 
-typedef struct {
-    char *block;
+typedef struct ArenaBlock {
+    struct ArenaBlock *next;
     size_t size;
     size_t offset;
+    char data[];
+} ArenaBlock;
+
+typedef struct {
+    ArenaBlock *first;
+    ArenaBlock *current;
 } Arena;
+
+static ArenaBlock *arena_block_create(size_t size) {
+    ArenaBlock *block = (ArenaBlock *)malloc(sizeof(ArenaBlock) + size);
+    if (!block) return NULL;
+    block->next = NULL;
+    block->size = size;
+    block->offset = 0;
+    return block;
+}
 
 Arena *arena_create(size_t size) {
     Arena *a = (Arena *)malloc(sizeof(Arena));
-    a->block = (char *)malloc(size);
-    a->size = size;
-    a->offset = 0;
+    if (!a) return NULL;
+    a->first = arena_block_create(size);
+    if (!a->first) {
+        free(a);
+        return NULL;
+    }
+    a->current = a->first;
     return a;
 }
 
 static inline void *arena_alloc(Arena *a, size_t size) {
     size_t aligned = (size + 7) & ~7;
-    if (a->offset + aligned > a->size) {
-        size_t next_size = a->size * 2;
+    ArenaBlock *block = a->current;
+    if (block->offset + aligned > block->size) {
+        size_t next_size = block->size * 2;
         if (next_size < aligned) next_size = aligned;
-        a->block = (char *)realloc(a->block, next_size);
-        a->size = next_size;
+        block->next = arena_block_create(next_size);
+        if (!block->next) return NULL;
+        block = block->next;
+        a->current = block;
     }
-    void *ptr = a->block + a->offset;
-    a->offset += aligned;
+    void *ptr = block->data + block->offset;
+    block->offset += aligned;
     return ptr;
 }
 
 void arena_destroy(Arena *a) {
     if (a) {
-        free(a->block);
+        ArenaBlock *block = a->first;
+        while (block) {
+            ArenaBlock *next = block->next;
+            free(block);
+            block = next;
+        }
         free(a);
     }
 }
@@ -279,6 +306,7 @@ typedef union {
 %}
 
 %token <token> STRING NUMBER TRUE FALSE NULL_TOK
+%token <token> '{' '}' '[' ']' ':' ','
 %type <node> json value object array members member values
 
 %%
@@ -298,7 +326,14 @@ value:
     ;
 
 object:
-    '{' '}' { if (bison_build_ast || bison_build_advanced_ast || bison_build_payload_ast) { $$ = make_any_node(bison_current_arena, NODE_OBJECT, "{}", 2); } }
+    '{' '}' { if (bison_build_ast || bison_build_advanced_ast || bison_build_payload_ast) {
+        $$ = make_any_node(
+            bison_current_arena,
+            NODE_OBJECT,
+            $1.text,
+            ($2.text + $2.length) - $1.text
+        );
+    } }
     | '{' members '}' { if (bison_build_ast || bison_build_advanced_ast || bison_build_payload_ast) { $$ = $2; } }
     ;
 
@@ -330,7 +365,14 @@ member:
     ;
 
 array:
-    '[' ']' { if (bison_build_ast || bison_build_advanced_ast || bison_build_payload_ast) { $$ = make_any_node(bison_current_arena, NODE_ARRAY, "[]", 2); } }
+    '[' ']' { if (bison_build_ast || bison_build_advanced_ast || bison_build_payload_ast) {
+        $$ = make_any_node(
+            bison_current_arena,
+            NODE_ARRAY,
+            $1.text,
+            ($2.text + $2.length) - $1.text
+        );
+    } }
     | '[' values ']' { if (bison_build_ast || bison_build_advanced_ast || bison_build_payload_ast) { $$ = $2; } }
     ;
 

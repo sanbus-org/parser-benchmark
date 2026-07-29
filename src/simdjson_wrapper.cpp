@@ -1,17 +1,14 @@
 #include "simdjson.h"
 
 // Validate: use the ondemand API which lazily validates structure without
-// materialising a DOM. We iterate top-level values to force stage-2 parsing
-// of the structural skeleton, but skip deep object/array content.
+// materialising a DOM. raw_json() internally consumes the document through
+// its end, so its result reports structural errors found during traversal.
 extern "C" bool benchmark_simdjson_validate(const char *input_ptr, size_t input_len) {
     auto view = simdjson::padded_string_view(input_ptr, input_len, input_len + simdjson::SIMDJSON_PADDING);
     simdjson::ondemand::parser parser;
     simdjson::ondemand::document doc;
     if (parser.iterate(view).get(doc)) return false;
-    for (auto val : doc) {
-        if (val.error()) return false;
-    }
-    return true;
+    return doc.raw_json().error() == simdjson::error_code::SUCCESS;
 }
 
 // DOM: use the dom::parser which always builds the full internal tape

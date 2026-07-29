@@ -3,8 +3,8 @@ set -eu
 
 dataset_name=${1:-}
 dataset_dir=${DATASET_DIR:-datasets}
-source_revision=478d5727c2a4048e835a29c65adecc7d795360d5
-source_root="https://raw.githubusercontent.com/miloyip/nativejson-benchmark/${source_revision}/data"
+source_revision=aeefe6a44f37fccf1f9d730766abab9ffea43c6b
+source_root="https://raw.githubusercontent.com/ibireme/yyjson_benchmark/${source_revision}/data/json"
 
 case "$dataset_name" in
     canada|canada.json|datasets/canada.json)
@@ -15,13 +15,41 @@ case "$dataset_name" in
         filename=citm_catalog.json
         expected_sha256=a73e7a883f6ea8de113dff59702975e60119b4b58d451d518a929f31c92e2059
         ;;
+    fgo|fgo.json|datasets/fgo.json)
+        filename=fgo.json
+        expected_sha256=4d0153f122aa4f049888dce8162d38b677e0127e2be90ae3afd998813f44a738
+        ;;
+    github_events|github_events.json|datasets/github_events.json)
+        filename=github_events.json
+        expected_sha256=c9eebb2cf2d46649059e9d48700919bacb3e8e0fb58452065a1a9de7778fd22e
+        ;;
+    gsoc-2018|gsoc-2018.json|datasets/gsoc-2018.json)
+        filename=gsoc-2018.json
+        expected_sha256=72f1ef4898d88049da856c2ab8f4ec3e2c968ce209b2bbfd16cef842eb2e185f
+        ;;
+    lottie|lottie.json|datasets/lottie.json)
+        filename=lottie.json
+        expected_sha256=7617a0bd9c5fadd1e20a9beccf127e4ab2eec90ae54aa3b251416c3246f8b716
+        ;;
+    otfcc|otfcc.json|datasets/otfcc.json)
+        filename=otfcc.json
+        expected_sha256=7cbdeac112ab424d7cc94c99f675b2b0b4b0315055437725cd47648426c831df
+        ;;
+    poet|poet.json|datasets/poet.json)
+        filename=poet.json
+        expected_sha256=2c2689a3b5df460f02e4dee2a36ac32cc27c43e2964fba7965eba3469bf617ec
+        ;;
     twitter|twitter.json|datasets/twitter.json)
         filename=twitter.json
         expected_sha256=a08b769f32b95f426cbc3abafcec65c1a19d3eb544d4ddf320eae142c99efc5d
         ;;
+    twitterescaped|twitterescaped.json|datasets/twitterescaped.json)
+        filename=twitterescaped.json
+        expected_sha256=2a288b5af4691c55b6f40fa534225b3e08b8d8b7f7ca4ed29bc5c7c81566ed4a
+        ;;
     *)
         echo "unknown external dataset: $dataset_name" >&2
-        echo "available datasets: canada, citm_catalog, twitter" >&2
+        echo "available datasets: canada, citm_catalog, fgo, github_events, gsoc-2018, lottie, otfcc, poet, twitter, twitterescaped" >&2
         exit 2
         ;;
 esac

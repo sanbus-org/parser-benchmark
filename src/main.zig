@@ -4,11 +4,11 @@ const c = @cImport({
 });
 extern fn tree_sitter_json() *c.TSLanguage;
 
-fn benchmarkTreeSitter(source: []const u8) void {
-    const parser = c.ts_parser_new();
+fn benchmarkTreeSitter(source: []const u8) bool {
+    const parser = c.ts_parser_new() orelse return false;
     defer c.ts_parser_delete(parser);
 
-    _ = c.ts_parser_set_language(parser, tree_sitter_json());
+    if (!c.ts_parser_set_language(parser, tree_sitter_json())) return false;
 
     // Benchmark this loop
     const tree = c.ts_parser_parse_string(
@@ -16,8 +16,11 @@ fn benchmarkTreeSitter(source: []const u8) void {
         null,
         source.ptr,
         @intCast(source.len),
-    );
+    ) orelse return false;
     defer c.ts_tree_delete(tree);
+
+    const root = c.ts_tree_root_node(tree);
+    return !c.ts_node_has_error(root) and c.ts_node_end_byte(root) == source.len;
 }
 
 extern fn yy_scan_string(str: [*]const u8) ?*anyopaque;
@@ -42,10 +45,22 @@ extern fn benchmark_simdjson_dom(ptr: [*]const u8, len: usize) bool;
 extern fn benchmark_nom(ptr: [*]const u8, len: usize) bool;
 extern fn benchmark_rapidjson_dom(ptr: [*]const u8, len: usize) bool;
 extern fn benchmark_rapidjson_sax(ptr: [*]const u8, len: usize) bool;
+extern fn benchmark_yyjson_dom(ptr: [*]const u8, len: usize) bool;
+extern fn benchmark_galley_ll_no_ast_create() ?*anyopaque;
+extern fn benchmark_galley_ll_no_ast_parse(context: ?*anyopaque, ptr: [*]const u8, len: usize) bool;
+extern fn benchmark_galley_ll_no_ast_destroy(context: ?*anyopaque) void;
+extern fn benchmark_galley_ll_ast_create() ?*anyopaque;
+extern fn benchmark_galley_ll_ast_parse(context: ?*anyopaque, ptr: [*]const u8, len: usize) bool;
+extern fn benchmark_galley_ll_ast_destroy(context: ?*anyopaque) void;
+extern fn benchmark_galley_lr_no_ast_create() ?*anyopaque;
+extern fn benchmark_galley_lr_no_ast_parse(context: ?*anyopaque, ptr: [*]const u8, len: usize) bool;
+extern fn benchmark_galley_lr_no_ast_destroy(context: ?*anyopaque) void;
+extern fn benchmark_galley_lr_ast_create() ?*anyopaque;
+extern fn benchmark_galley_lr_ast_parse(context: ?*anyopaque, ptr: [*]const u8, len: usize) bool;
+extern fn benchmark_galley_lr_ast_destroy(context: ?*anyopaque) void;
 
-fn benchmarkBison(source: [:0]const u8, build_ast: bool, build_advanced_ast: bool, build_payload_ast: bool) void {
-    const buffer_state = yy_scan_string(source.ptr);
-    _ = buffer_state;
+fn benchmarkBison(source: [:0]const u8, build_ast: bool, build_advanced_ast: bool, build_payload_ast: bool) bool {
+    _ = yy_scan_string(source.ptr) orelse return false;
 
     if (build_payload_ast) {
         bison_build_ast = 0;
@@ -73,7 +88,8 @@ fn benchmarkBison(source: [:0]const u8, build_ast: bool, build_advanced_ast: boo
         bison_root_node = null;
     }
 
-    _ = yyparse();
+    const parse_succeeded = yyparse() == 0 and
+        (!(build_ast or build_advanced_ast or build_payload_ast) or bison_root_node != null);
 
     if (build_ast or build_advanced_ast or build_payload_ast) {
         arena_destroy(bison_current_arena);
@@ -81,6 +97,7 @@ fn benchmarkBison(source: [:0]const u8, build_ast: bool, build_advanced_ast: boo
     }
 
     yylex_destroy();
+    return parse_succeeded;
 }
 
 const Result = struct {
@@ -90,6 +107,67 @@ const Result = struct {
     duration_ns: i96,
     parsed_bytes: usize,
 };
+
+fn benchmarkGalley(
+    comptime create: fn () callconv(.c) ?*anyopaque,
+    comptime parse: fn (?*anyopaque, [*]const u8, usize) callconv(.c) bool,
+    comptime destroy: fn (?*anyopaque) callconv(.c) void,
+    init: std.process.Init,
+    file_content: []const u8,
+    mode: []const u8,
+) !Result {
+    const session = create() orelse return error.GalleySessionInitFailed;
+    defer destroy(session);
+
+    const start = std.Io.Clock.awake.now(init.io);
+    const parsed = parse(session, file_content.ptr, file_content.len);
+    const end = std.Io.Clock.awake.now(init.io);
+
+    if (!parsed) return error.GalleyParseFailed;
+    const elapsed_ns = start.durationTo(end).toNanoseconds();
+    const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
+    return .{
+        .name = "Galley (Zig)",
+        .mode = mode,
+        .mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs,
+        .duration_ns = elapsed_ns,
+        .parsed_bytes = file_content.len,
+    };
+}
+
+const general_parser_color = "\x1b[36m";
+const json_parser_color = "\x1b[33m";
+const galley_color = "\x1b[1;35m";
+const reset_color = "\x1b[0m";
+
+fn resultColor(name: []const u8) []const u8 {
+    if (std.mem.eql(u8, name, "Galley (Zig)")) return galley_color;
+    if (std.mem.startsWith(u8, name, "simdjson") or
+        std.mem.startsWith(u8, name, "RapidJSON") or
+        std.mem.startsWith(u8, name, "yyjson"))
+    {
+        return json_parser_color;
+    }
+    return general_parser_color;
+}
+
+fn simdMarker(name: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, name, "simdjson") or
+        std.mem.startsWith(u8, name, "RapidJSON"))
+    {
+        return "▣";
+    }
+    return " ";
+}
+
+fn astMarker(mode: []const u8) []const u8 {
+    if (std.mem.indexOf(u8, mode, "AST") != null and
+        std.mem.indexOf(u8, mode, "No AST") == null)
+    {
+        return "🌳";
+    }
+    return "  ";
+}
 
 fn writeResultsToFile(io: @TypeOf(@as(std.process.Init, undefined).io), input_path: []const u8, results: []const Result) !void {
     var cwd = std.Io.Dir.cwd();
@@ -121,12 +199,7 @@ fn writeResultsToFile(io: @TypeOf(@as(std.process.Init, undefined).io), input_pa
     try file_writer.flush();
 }
 
-pub fn main(init: std.process.Init) !void {
-    var file_path: []const u8 = "datasets/twitter.json";
-    if (init.minimal.args.vector.len > 1) {
-        file_path = std.mem.span(init.minimal.args.vector[1]);
-    }
-
+fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
     const file_content = try std.Io.Dir.cwd().readFileAlloc(init.io, file_path, init.gpa, .unlimited);
     defer init.gpa.free(file_content);
 
@@ -142,9 +215,10 @@ pub fn main(init: std.process.Init) !void {
     // 1. Benchmark Tree-sitter (CST mode)
     {
         const start = std.Io.Clock.awake.now(init.io);
-        benchmarkTreeSitter(file_content);
+        const parsed = benchmarkTreeSitter(file_content);
 
         const end = std.Io.Clock.awake.now(init.io);
+        if (!parsed) return error.TreeSitterParseFailed;
         const duration = start.durationTo(end);
         const elapsed_ns = duration.toNanoseconds();
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
@@ -168,17 +242,18 @@ pub fn main(init: std.process.Init) !void {
     {
         const start = std.Io.Clock.awake.now(init.io);
 
-        benchmarkBison(file_content_z, false, false, false);
+        const parsed = benchmarkBison(file_content_z, false, false, false);
 
         const end = std.Io.Clock.awake.now(init.io);
+        if (!parsed) return error.BisonParseFailed;
         const duration = start.durationTo(end);
         const elapsed_ns = duration.toNanoseconds();
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
 
         results[result_count] = .{
-            .name = "Bison / Flex",
-            .mode = "Non-AST",
+            .name = "Bison / Flex (C)",
+            .mode = "No AST",
             .mbps = mbps,
             .duration_ns = elapsed_ns,
             .parsed_bytes = file_content.len,
@@ -190,16 +265,17 @@ pub fn main(init: std.process.Init) !void {
     {
         const start = std.Io.Clock.awake.now(init.io);
 
-        benchmarkBison(file_content_z, true, false, false);
+        const parsed = benchmarkBison(file_content_z, true, false, false);
 
         const end = std.Io.Clock.awake.now(init.io);
+        if (!parsed) return error.BisonParseFailed;
         const duration = start.durationTo(end);
         const elapsed_ns = duration.toNanoseconds();
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
 
         results[result_count] = .{
-            .name = "Bison / Flex",
+            .name = "Bison / Flex (C)",
             .mode = "Simple AST",
             .mbps = mbps,
             .duration_ns = elapsed_ns,
@@ -212,17 +288,18 @@ pub fn main(init: std.process.Init) !void {
     {
         const start = std.Io.Clock.awake.now(init.io);
 
-        benchmarkBison(file_content_z, false, true, false);
+        const parsed = benchmarkBison(file_content_z, false, true, false);
 
         const end = std.Io.Clock.awake.now(init.io);
+        if (!parsed) return error.BisonParseFailed;
         const duration = start.durationTo(end);
         const elapsed_ns = duration.toNanoseconds();
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
 
         results[result_count] = .{
-            .name = "Bison / Flex",
-            .mode = "Adv AST",
+            .name = "Bison / Flex (C)",
+            .mode = "Advanced AST",
             .mbps = mbps,
             .duration_ns = elapsed_ns,
             .parsed_bytes = file_content.len,
@@ -234,16 +311,17 @@ pub fn main(init: std.process.Init) !void {
     {
         const start = std.Io.Clock.awake.now(init.io);
 
-        benchmarkBison(file_content_z, false, false, true);
+        const parsed = benchmarkBison(file_content_z, false, false, true);
 
         const end = std.Io.Clock.awake.now(init.io);
+        if (!parsed) return error.BisonParseFailed;
         const duration = start.durationTo(end);
         const elapsed_ns = duration.toNanoseconds();
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
 
         results[result_count] = .{
-            .name = "Bison / Flex",
+            .name = "Bison / Flex (C)",
             .mode = "Payload AST",
             .mbps = mbps,
             .duration_ns = elapsed_ns,
@@ -256,9 +334,10 @@ pub fn main(init: std.process.Init) !void {
     {
         const start = std.Io.Clock.awake.now(init.io);
 
-        _ = benchmark_lalrpop(file_content.ptr, file_content.len);
+        const parsed = benchmark_lalrpop(file_content.ptr, file_content.len);
 
         const end = std.Io.Clock.awake.now(init.io);
+        if (!parsed) return error.LalrpopParseFailed;
         const duration = start.durationTo(end);
         const elapsed_ns = duration.toNanoseconds();
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
@@ -266,7 +345,7 @@ pub fn main(init: std.process.Init) !void {
 
         results[result_count] = .{
             .name = "LALRPOP (Rust)",
-            .mode = "Non-AST",
+            .mode = "No AST",
             .mbps = mbps,
             .duration_ns = elapsed_ns,
             .parsed_bytes = file_content.len,
@@ -278,9 +357,10 @@ pub fn main(init: std.process.Init) !void {
     {
         const start = std.Io.Clock.awake.now(init.io);
 
-        _ = benchmark_simdjson_validate(file_content_padded.ptr, file_content.len);
+        const parsed = benchmark_simdjson_validate(file_content_padded.ptr, file_content.len);
 
         const end = std.Io.Clock.awake.now(init.io);
+        if (!parsed) return error.SimdjsonValidationFailed;
         const duration = start.durationTo(end);
         const elapsed_ns = duration.toNanoseconds();
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
@@ -300,9 +380,10 @@ pub fn main(init: std.process.Init) !void {
     {
         const start = std.Io.Clock.awake.now(init.io);
 
-        _ = benchmark_simdjson_dom(file_content_padded.ptr, file_content.len);
+        const parsed = benchmark_simdjson_dom(file_content_padded.ptr, file_content.len);
 
         const end = std.Io.Clock.awake.now(init.io);
+        if (!parsed) return error.SimdjsonDomParseFailed;
         const duration = start.durationTo(end);
         const elapsed_ns = duration.toNanoseconds();
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
@@ -310,7 +391,7 @@ pub fn main(init: std.process.Init) !void {
 
         results[result_count] = .{
             .name = "simdjson (C++)",
-            .mode = "DOM (AST)",
+            .mode = "DOM AST",
             .mbps = mbps,
             .duration_ns = elapsed_ns,
             .parsed_bytes = file_content.len,
@@ -322,9 +403,10 @@ pub fn main(init: std.process.Init) !void {
     {
         const start = std.Io.Clock.awake.now(init.io);
 
-        _ = benchmark_nom(file_content.ptr, file_content.len);
+        const parsed = benchmark_nom(file_content.ptr, file_content.len);
 
         const end = std.Io.Clock.awake.now(init.io);
+        if (!parsed) return error.NomParseFailed;
         const duration = start.durationTo(end);
         const elapsed_ns = duration.toNanoseconds();
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
@@ -344,17 +426,18 @@ pub fn main(init: std.process.Init) !void {
     {
         const start = std.Io.Clock.awake.now(init.io);
 
-        _ = benchmark_rapidjson_dom(file_content.ptr, file_content.len);
+        const parsed = benchmark_rapidjson_dom(file_content.ptr, file_content.len);
 
         const end = std.Io.Clock.awake.now(init.io);
+        if (!parsed) return error.RapidjsonDomParseFailed;
         const duration = start.durationTo(end);
         const elapsed_ns = duration.toNanoseconds();
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
 
         results[result_count] = .{
-            .name = "RapidJSON (C++ / SIMD)",
-            .mode = "DOM (AST)",
+            .name = "RapidJSON (C++)",
+            .mode = "DOM AST",
             .mbps = mbps,
             .duration_ns = elapsed_ns,
             .parsed_bytes = file_content.len,
@@ -366,17 +449,18 @@ pub fn main(init: std.process.Init) !void {
     {
         const start = std.Io.Clock.awake.now(init.io);
 
-        _ = benchmark_rapidjson_sax(file_content.ptr, file_content.len);
+        const parsed = benchmark_rapidjson_sax(file_content.ptr, file_content.len);
 
         const end = std.Io.Clock.awake.now(init.io);
+        if (!parsed) return error.RapidjsonSaxParseFailed;
         const duration = start.durationTo(end);
         const elapsed_ns = duration.toNanoseconds();
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
 
         results[result_count] = .{
-            .name = "RapidJSON (C++ / SIMD)",
-            .mode = "SAX (Validate)",
+            .name = "RapidJSON (C++)",
+            .mode = "SAX Validate",
             .mbps = mbps,
             .duration_ns = elapsed_ns,
             .parsed_bytes = file_content.len,
@@ -384,18 +468,130 @@ pub fn main(init: std.process.Init) !void {
         result_count += 1;
     }
 
-    // Print the final nice table
-    std.debug.print("\n", .{});
+    // 12-15. Benchmark Galley LL/LR with and without AST construction.
+    results[result_count] = try benchmarkGalley(
+        benchmark_galley_ll_no_ast_create,
+        benchmark_galley_ll_no_ast_parse,
+        benchmark_galley_ll_no_ast_destroy,
+        init,
+        file_content,
+        "LL No AST",
+    );
+    result_count += 1;
+    results[result_count] = try benchmarkGalley(
+        benchmark_galley_ll_ast_create,
+        benchmark_galley_ll_ast_parse,
+        benchmark_galley_ll_ast_destroy,
+        init,
+        file_content,
+        "LL AST",
+    );
+    result_count += 1;
+    results[result_count] = try benchmarkGalley(
+        benchmark_galley_lr_no_ast_create,
+        benchmark_galley_lr_no_ast_parse,
+        benchmark_galley_lr_no_ast_destroy,
+        init,
+        file_content,
+        "LR No AST",
+    );
+    result_count += 1;
+    results[result_count] = try benchmarkGalley(
+        benchmark_galley_lr_ast_create,
+        benchmark_galley_lr_ast_parse,
+        benchmark_galley_lr_ast_destroy,
+        init,
+        file_content,
+        "LR AST",
+    );
+    result_count += 1;
+
+    // 16. Benchmark yyjson DOM (AST mode)
+    {
+        const start = std.Io.Clock.awake.now(init.io);
+        if (!benchmark_yyjson_dom(file_content.ptr, file_content.len)) return error.YyjsonParseFailed;
+        const end = std.Io.Clock.awake.now(init.io);
+
+        const duration = start.durationTo(end);
+        const elapsed_ns = duration.toNanoseconds();
+        const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
+        const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
+
+        results[result_count] = .{
+            .name = "yyjson (C)",
+            .mode = "DOM AST",
+            .mbps = mbps,
+            .duration_ns = elapsed_ns,
+            .parsed_bytes = file_content.len,
+        };
+        result_count += 1;
+    }
+
+    const completed_results = results[0..result_count];
+    std.sort.insertion(Result, completed_results, {}, struct {
+        fn fasterThan(_: void, lhs: Result, rhs: Result) bool {
+            return lhs.mbps > rhs.mbps;
+        }
+    }.fasterThan);
+
+    // Print the final table in descending throughput order.
+    std.debug.print("\nDataset: {s}\n", .{file_path});
+    std.debug.print(
+        "Legend: {s}general-purpose{s}  {s}JSON-specific{s}  {s}Galley{s}  ▣ SIMD  🌳 AST\n",
+        .{
+            general_parser_color,
+            reset_color,
+            json_parser_color,
+            reset_color,
+            galley_color,
+            reset_color,
+        },
+    );
     std.debug.print("+------------------------------------+------------------+-----------------+\n", .{});
     std.debug.print("| Parser Benchmark                   | Mode             | Throughput      |\n", .{});
     std.debug.print("+------------------------------------+------------------+-----------------+\n", .{});
-    for (results[0..result_count]) |r| {
-        std.debug.print("| {s: <34} | {s: <16} | {d: >9.2} MB/s |\n", .{ r.name, r.mode, r.mbps });
+    for (completed_results) |r| {
+        std.debug.print(
+            "| {s} {s}{s} {s: <30}{s}| {s: <16} | {d: >10.2} MB/s |\n",
+            .{
+                simdMarker(r.name),
+                astMarker(r.mode),
+                resultColor(r.name),
+                r.name,
+                reset_color,
+                r.mode,
+                r.mbps,
+            },
+        );
     }
     std.debug.print("+------------------------------------+------------------+-----------------+\n\n", .{});
 
     // Write machine-readable output to file
-    writeResultsToFile(init.io, file_path, results[0..result_count]) catch |err| {
+    writeResultsToFile(init.io, file_path, completed_results) catch |err| {
         std.debug.print("Failed to write results to file: {}\n", .{err});
     };
+}
+
+pub fn main(init: std.process.Init) !void {
+    const args = init.minimal.args.vector;
+    if (args.len > 1) {
+        for (args[1..]) |arg| {
+            try benchmarkFile(init, std.mem.span(arg));
+        }
+        return;
+    }
+
+    const default_datasets = [_][]const u8{
+        "datasets/canada.json",
+        "datasets/citm_catalog.json",
+        "datasets/github_events.json",
+        "datasets/gsoc-2018.json",
+        "datasets/lottie.json",
+        "datasets/poet.json",
+        "datasets/twitter.json",
+        "datasets/twitterescaped.json",
+    };
+    for (default_datasets) |file_path| {
+        try benchmarkFile(init, file_path);
+    }
 }

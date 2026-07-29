@@ -12,6 +12,7 @@ typedef union {
 %}
 
 %option fast
+%option 8bit
 %option noyywrap
 %option nounput
 %option noinput
@@ -19,12 +20,12 @@ typedef union {
 
 %%
 [ \t\r\n]+             ; /* Ignore whitespace */
-"{"                     return '{';
-"}"                     return '}';
-"["                     return '[';
-"]"                     return ']';
-":"                     return ':';
-","                     return ',';
+"{"                     { yylval.token.text = yytext; yylval.token.length = yyleng; return '{'; }
+"}"                     { yylval.token.text = yytext; yylval.token.length = yyleng; return '}'; }
+"["                     { yylval.token.text = yytext; yylval.token.length = yyleng; return '['; }
+"]"                     { yylval.token.text = yytext; yylval.token.length = yyleng; return ']'; }
+":"                     { yylval.token.text = yytext; yylval.token.length = yyleng; return ':'; }
+","                     { yylval.token.text = yytext; yylval.token.length = yyleng; return ','; }
 "true"                  { yylval.token.text = yytext; yylval.token.length = yyleng; return TRUE; }
 "false"                 { yylval.token.text = yytext; yylval.token.length = yyleng; return FALSE; }
 "null"                  { yylval.token.text = yytext; yylval.token.length = yyleng; return NULL_TOK; }
