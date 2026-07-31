@@ -32,8 +32,7 @@ pub fn main(init: std.process.Init) !void {
             .with_procedures = false,
             .with_error_recovery = false,
             .with_position_tracking = false,
-            .with_input_refill = false,
-            .input_size = 32,
+            .with_input_streaming = false,
         },
     );
     try std.Io.Dir.cwd().writeFile(init.io, .{
