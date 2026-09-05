@@ -20,7 +20,41 @@ pub fn build(b: *std.Build) void {
 
     // Generate and assemble Galley's LL/LR, AST/non-AST JSON parsers through
     // its public API.
-    const galley = b.dependency("galley", .{
+    // Use a local Galley checkout instead of the pinned `galley/`
+    // submodule when GALLEY_LOCAL_PATH holds a filesystem path. Implemented
+    // by refreshing the `galley-local` symlink (resolved through the
+    // `galley_dev` path dependency), so any absolute — or root-relative —
+    // checkout works:
+    //   GALLEY_LOCAL_PATH=$PWD/../.. zig build -Doptimize=ReleaseFast run -- twitter
+    const galley = if (localGalleyRoot(b)) |local_path| blk: {
+        // The package manager snapshots the `galley-local` symlink before
+        // build() runs, so a freshly created link only takes effect on the
+        // next invocation. When the link is missing or stale, refresh it and
+        // stop with instructions instead of silently benchmarking the pinned
+        // tree.
+        const root = b.build_root.handle;
+        var link_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const current_len = root.readLink(b.graph.io, "galley-local", &link_buf) catch null;
+        const want = std.mem.trimEnd(u8, local_path, "/");
+        const current: ?[]const u8 = if (current_len) |len| link_buf[0..len] else null;
+        if (current == null or !std.mem.eql(u8, current.?, want)) {
+            root.deleteFile(b.graph.io, "galley-local") catch |err| switch (err) {
+                error.FileNotFound => {},
+                else => @panic("GALLEY_LOCAL_PATH: cannot replace galley-local"),
+            };
+            root.symLink(b.graph.io, want, "galley-local", .{}) catch
+                @panic("GALLEY_LOCAL_PATH: cannot link local galley");
+            std.debug.print(
+                "GALLEY_LOCAL_PATH: linked galley-local, re-run the same command\n",
+                .{},
+            );
+            std.process.exit(1);
+        }
+        break :blk b.dependency("galley_dev", .{
+            .target = target,
+            .optimize = optimize,
+        });
+    } else b.dependency("galley", .{
         .target = target,
         .optimize = optimize,
     });
@@ -167,6 +201,16 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 }
 
+/// Filesystem path of a local Galley checkout when GALLEY_LOCAL_PATH holds
+/// a non-empty value, otherwise null (use the pinned `galley/` submodule).
+/// Refreshing the `galley-local` symlink happens at the dependency selection
+/// site; this getter stays side-effect free so variant setup can reuse it.
+fn localGalleyRoot(b: *std.Build) ?[]const u8 {
+    const path = b.graph.environ_map.get("GALLEY_LOCAL_PATH") orelse return null;
+    if (path.len == 0) return null;
+    return path;
+}
+
 const GalleyVariant = struct {
     name: []const u8,
     symbol_suffix: []const u8,
@@ -182,11 +226,44 @@ fn addGalleyVariant(
     generator_tool: *std.Build.Step.Compile,
     variant: GalleyVariant,
 ) *std.Build.Step.Compile {
+    const local_root = localGalleyRoot(b);
+    const grammar_source: std.Build.LazyPath = if (local_root) |root|
+        .{ .cwd_relative = b.fmt("{s}/languages/json-unicode/{s}.grm", .{ root, variant.parser_type }) }
+    else
+        galley.path(b.fmt(
+            "languages/json-unicode/{s}.grm",
+            .{variant.parser_type},
+        ));
+    const procedures_source: std.Build.LazyPath = if (local_root) |root|
+        .{ .cwd_relative = b.fmt("{s}/languages/json-unicode/procedures.zig", .{root}) }
+    else
+        b.path("src/galley_procedures.zig");
+    const error_messages_source: std.Build.LazyPath = if (local_root) |root|
+        .{ .cwd_relative = b.fmt("{s}/languages/json-unicode/{s}_error_messages.zig", .{ root, variant.parser_type }) }
+    else
+        b.path("src/galley_error_messages.zig");
+    // The generated parser reads `config.ast` at compile time, so each
+    // variant needs its own config. Values mirror Galley's own benchmark
+    // matrix (no procedures, no terminal AST, no error recovery); only `ast`
+    // varies. The pinned flow keeps its single shared config file.
+    const config_source: std.Build.LazyPath = if (local_root != null) blk: {
+        const config_wf = b.addWriteFiles();
+        break :blk config_wf.add("config.zig", b.fmt(
+            \\pub const ast = {s};
+            \\pub const procedures = false;
+            \\pub const allow_no_ast_tree_procedures = false;
+            \\pub const require_reduction_procedures = false;
+            \\pub const error_recovery = false;
+            \\pub const ast_for_terminals = false;
+            \\pub const position_tracking: ?bool = null;
+            \\pub const input_streaming = false;
+            \\pub const indentation_syntax = false;
+            \\pub const error_messages = .{{}};
+            \\
+        , .{if (variant.with_ast) "true" else "false"}));
+    } else b.path("src/galley_config.zig");
     const generate = b.addRunArtifact(generator_tool);
-    generate.addFileArg(galley.path(b.fmt(
-        "languages/json-unicode/{s}.grm",
-        .{variant.parser_type},
-    )));
+    generate.addFileArg(grammar_source);
     generate.addArg(variant.parser_type);
     generate.addArg(if (variant.with_ast) "ast" else "no-ast");
     const parser_source = generate.addOutputFileArg(b.fmt(
@@ -214,17 +291,17 @@ fn addGalleyVariant(
         b.fmt("benchmark_galley_{s}_destroy", .{variant.symbol_suffix}),
     );
     const procedures = b.createModule(.{
-        .root_source_file = b.path("src/galley_procedures.zig"),
+        .root_source_file = procedures_source,
         .target = target,
         .optimize = optimize,
     });
     const config = b.createModule(.{
-        .root_source_file = b.path("src/galley_config.zig"),
+        .root_source_file = config_source,
         .target = target,
         .optimize = optimize,
     });
     const error_messages = b.createModule(.{
-        .root_source_file = b.path("src/galley_error_messages.zig"),
+        .root_source_file = error_messages_source,
         .target = target,
         .optimize = optimize,
     });

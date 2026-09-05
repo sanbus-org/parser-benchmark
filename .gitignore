@@ -5,3 +5,4 @@ libparsers.so
 lalrpop-bench/target/
 datasets/*.json
 benchmark_results/
+galley-local

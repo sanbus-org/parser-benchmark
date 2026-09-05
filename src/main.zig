@@ -108,6 +108,33 @@ const Result = struct {
     parsed_bytes: usize,
 };
 
+/// Warmup iterations run untimed before each measurement.
+const warmup_runs: usize = 2;
+/// Timed iterations per parser; the best (shortest) one is reported.
+const measure_runs: usize = 5;
+
+/// Run `parse(args)` untimed `warmup_runs` times, then timed `measure_runs`
+/// times, returning the best (shortest) elapsed time in nanoseconds.
+/// Best-of-N suppresses scheduling and frequency noise; warmup settles
+/// caches, branch predictors, and page faults before timing starts.
+fn timeBestNs(init: std.process.Init, parse: anytype, args: anytype) error{ParseFailed}!i96 {
+    var i: usize = 0;
+    while (i < warmup_runs) : (i += 1) {
+        if (!@call(.auto, parse, args)) return error.ParseFailed;
+    }
+    var best: i96 = std.math.maxInt(i96);
+    i = 0;
+    while (i < measure_runs) : (i += 1) {
+        const start = std.Io.Clock.awake.now(init.io);
+        const ok = @call(.auto, parse, args);
+        const end = std.Io.Clock.awake.now(init.io);
+        if (!ok) return error.ParseFailed;
+        const elapsed_ns = start.durationTo(end).toNanoseconds();
+        if (elapsed_ns < best) best = elapsed_ns;
+    }
+    return best;
+}
+
 fn benchmarkGalley(
     comptime create: fn () callconv(.c) ?*anyopaque,
     comptime parse: fn (?*anyopaque, [*]const u8, usize) callconv(.c) bool,
@@ -119,12 +146,8 @@ fn benchmarkGalley(
     const session = create() orelse return error.GalleySessionInitFailed;
     defer destroy(session);
 
-    const start = std.Io.Clock.awake.now(init.io);
-    const parsed = parse(session, file_content.ptr, file_content.len);
-    const end = std.Io.Clock.awake.now(init.io);
-
-    if (!parsed) return error.GalleyParseFailed;
-    const elapsed_ns = start.durationTo(end).toNanoseconds();
+    const elapsed_ns = timeBestNs(init, parse, .{ session, file_content.ptr, file_content.len }) catch
+        return error.GalleyParseFailed;
     const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
     return .{
         .name = "Galley (Zig)",
@@ -153,7 +176,8 @@ fn resultColor(name: []const u8) []const u8 {
 
 fn simdMarker(name: []const u8) []const u8 {
     if (std.mem.startsWith(u8, name, "simdjson") or
-        std.mem.startsWith(u8, name, "RapidJSON"))
+        std.mem.startsWith(u8, name, "RapidJSON") or
+        std.mem.startsWith(u8, name, "yyjson"))
     {
         return "▣";
     }
@@ -214,13 +238,8 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 1. Benchmark Tree-sitter (CST mode)
     {
-        const start = std.Io.Clock.awake.now(init.io);
-        const parsed = benchmarkTreeSitter(file_content);
-
-        const end = std.Io.Clock.awake.now(init.io);
-        if (!parsed) return error.TreeSitterParseFailed;
-        const duration = start.durationTo(end);
-        const elapsed_ns = duration.toNanoseconds();
+        const elapsed_ns = timeBestNs(init, benchmarkTreeSitter, .{file_content}) catch
+            return error.TreeSitterParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
 
@@ -240,14 +259,8 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 2. Benchmark Bison (Non-AST mode)
     {
-        const start = std.Io.Clock.awake.now(init.io);
-
-        const parsed = benchmarkBison(file_content_z, false, false, false);
-
-        const end = std.Io.Clock.awake.now(init.io);
-        if (!parsed) return error.BisonParseFailed;
-        const duration = start.durationTo(end);
-        const elapsed_ns = duration.toNanoseconds();
+        const elapsed_ns = timeBestNs(init, benchmarkBison, .{ file_content_z, false, false, false }) catch
+            return error.BisonParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
 
@@ -263,14 +276,8 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 3. Benchmark Bison (Simple AST-building mode)
     {
-        const start = std.Io.Clock.awake.now(init.io);
-
-        const parsed = benchmarkBison(file_content_z, true, false, false);
-
-        const end = std.Io.Clock.awake.now(init.io);
-        if (!parsed) return error.BisonParseFailed;
-        const duration = start.durationTo(end);
-        const elapsed_ns = duration.toNanoseconds();
+        const elapsed_ns = timeBestNs(init, benchmarkBison, .{ file_content_z, true, false, false }) catch
+            return error.BisonParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
 
@@ -286,14 +293,8 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 4. Benchmark Bison (Advanced AST-building mode)
     {
-        const start = std.Io.Clock.awake.now(init.io);
-
-        const parsed = benchmarkBison(file_content_z, false, true, false);
-
-        const end = std.Io.Clock.awake.now(init.io);
-        if (!parsed) return error.BisonParseFailed;
-        const duration = start.durationTo(end);
-        const elapsed_ns = duration.toNanoseconds();
+        const elapsed_ns = timeBestNs(init, benchmarkBison, .{ file_content_z, false, true, false }) catch
+            return error.BisonParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
 
@@ -309,14 +310,8 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 5. Benchmark Bison (Advanced AST with Payload mode)
     {
-        const start = std.Io.Clock.awake.now(init.io);
-
-        const parsed = benchmarkBison(file_content_z, false, false, true);
-
-        const end = std.Io.Clock.awake.now(init.io);
-        if (!parsed) return error.BisonParseFailed;
-        const duration = start.durationTo(end);
-        const elapsed_ns = duration.toNanoseconds();
+        const elapsed_ns = timeBestNs(init, benchmarkBison, .{ file_content_z, false, false, true }) catch
+            return error.BisonParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
 
@@ -332,14 +327,8 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 6. Benchmark LALRPOP (Non-AST mode)
     {
-        const start = std.Io.Clock.awake.now(init.io);
-
-        const parsed = benchmark_lalrpop(file_content.ptr, file_content.len);
-
-        const end = std.Io.Clock.awake.now(init.io);
-        if (!parsed) return error.LalrpopParseFailed;
-        const duration = start.durationTo(end);
-        const elapsed_ns = duration.toNanoseconds();
+        const elapsed_ns = timeBestNs(init, benchmark_lalrpop, .{ file_content.ptr, file_content.len }) catch
+            return error.LalrpopParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
 
@@ -355,14 +344,8 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 7. Benchmark simdjson Validate (Non-AST mode)
     {
-        const start = std.Io.Clock.awake.now(init.io);
-
-        const parsed = benchmark_simdjson_validate(file_content_padded.ptr, file_content.len);
-
-        const end = std.Io.Clock.awake.now(init.io);
-        if (!parsed) return error.SimdjsonValidationFailed;
-        const duration = start.durationTo(end);
-        const elapsed_ns = duration.toNanoseconds();
+        const elapsed_ns = timeBestNs(init, benchmark_simdjson_validate, .{ file_content_padded.ptr, file_content.len }) catch
+            return error.SimdjsonValidationFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
 
@@ -378,14 +361,8 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 8. Benchmark simdjson DOM (AST mode)
     {
-        const start = std.Io.Clock.awake.now(init.io);
-
-        const parsed = benchmark_simdjson_dom(file_content_padded.ptr, file_content.len);
-
-        const end = std.Io.Clock.awake.now(init.io);
-        if (!parsed) return error.SimdjsonDomParseFailed;
-        const duration = start.durationTo(end);
-        const elapsed_ns = duration.toNanoseconds();
+        const elapsed_ns = timeBestNs(init, benchmark_simdjson_dom, .{ file_content_padded.ptr, file_content.len }) catch
+            return error.SimdjsonDomParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
 
@@ -401,14 +378,8 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 9. Benchmark Nom (AST mode)
     {
-        const start = std.Io.Clock.awake.now(init.io);
-
-        const parsed = benchmark_nom(file_content.ptr, file_content.len);
-
-        const end = std.Io.Clock.awake.now(init.io);
-        if (!parsed) return error.NomParseFailed;
-        const duration = start.durationTo(end);
-        const elapsed_ns = duration.toNanoseconds();
+        const elapsed_ns = timeBestNs(init, benchmark_nom, .{ file_content.ptr, file_content.len }) catch
+            return error.NomParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
 
@@ -424,14 +395,8 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 10. Benchmark RapidJSON DOM (AST mode)
     {
-        const start = std.Io.Clock.awake.now(init.io);
-
-        const parsed = benchmark_rapidjson_dom(file_content.ptr, file_content.len);
-
-        const end = std.Io.Clock.awake.now(init.io);
-        if (!parsed) return error.RapidjsonDomParseFailed;
-        const duration = start.durationTo(end);
-        const elapsed_ns = duration.toNanoseconds();
+        const elapsed_ns = timeBestNs(init, benchmark_rapidjson_dom, .{ file_content.ptr, file_content.len }) catch
+            return error.RapidjsonDomParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
 
@@ -447,14 +412,8 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 11. Benchmark RapidJSON SAX (Non-AST mode)
     {
-        const start = std.Io.Clock.awake.now(init.io);
-
-        const parsed = benchmark_rapidjson_sax(file_content.ptr, file_content.len);
-
-        const end = std.Io.Clock.awake.now(init.io);
-        if (!parsed) return error.RapidjsonSaxParseFailed;
-        const duration = start.durationTo(end);
-        const elapsed_ns = duration.toNanoseconds();
+        const elapsed_ns = timeBestNs(init, benchmark_rapidjson_sax, .{ file_content.ptr, file_content.len }) catch
+            return error.RapidjsonSaxParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
 
@@ -508,12 +467,8 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 16. Benchmark yyjson DOM (AST mode)
     {
-        const start = std.Io.Clock.awake.now(init.io);
-        if (!benchmark_yyjson_dom(file_content.ptr, file_content.len)) return error.YyjsonParseFailed;
-        const end = std.Io.Clock.awake.now(init.io);
-
-        const duration = start.durationTo(end);
-        const elapsed_ns = duration.toNanoseconds();
+        const elapsed_ns = timeBestNs(init, benchmark_yyjson_dom, .{ file_content.ptr, file_content.len }) catch
+            return error.YyjsonParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
 
@@ -536,6 +491,7 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // Print the final table in descending throughput order.
     std.debug.print("\nDataset: {s}\n", .{file_path});
+    std.debug.print("Timing: {d} warmup + best of {d} runs\n", .{ warmup_runs, measure_runs });
     std.debug.print(
         "Legend: {s}general-purpose{s}  {s}JSON-specific{s}  {s}Galley{s}  ▣ SIMD  🌳 AST\n",
         .{

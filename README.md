@@ -39,6 +39,16 @@ The default set is:
 - `twitter`
 - `twitterescaped`
 
+Benchmarking a local Galley checkout instead of the pinned `galley/`
+submodule:
+
+```sh
+GALLEY_LOCAL_PATH=$PWD/../.. zig build -Doptimize=ReleaseFast run -- twitter
+```
+
+An empty value behaves as unset. The `galley-local` symlink is managed by
+the build and ignored by git.
+
 Pass one or more names to run only selected datasets:
 
 ```sh

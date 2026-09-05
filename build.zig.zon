@@ -6,6 +6,9 @@
         .galley = .{
             .path = "galley",
         },
+        .galley_dev = .{
+            .path = "galley-local",
+        },
     },
     .paths = .{""},
     .fingerprint = 0xcb82705a045f946e,
