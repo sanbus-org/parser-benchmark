@@ -1,0 +1,71 @@
+//! JSON grammar that builds an AST.
+//!
+//! Token-for-token identical to `json.lalrpop` (same string/number patterns,
+//! same lax escapes), so the No-AST vs AST delta measures tree building only.
+//! Tree shape mirrors Bison's Simple AST node-for-node: object/array accumulator
+//! nodes whose children are members/values, member nodes spanning key through
+//! value with the value as their single child, and leaf nodes for scalars.
+//! Nodes live in a thread-local arena and link by index; spans are byte offsets
+//! into the input, matching Bison's borrowed-span nodes.
+
+grammar;
+
+use super::{alloc_node, append_child, AstNodeType};
+
+pub JSON: usize = {
+    Value => <>,
+};
+
+Value: usize = {
+    Object => <>,
+    Array => <>,
+    <l:@L> r#""([^"\\]|\\.)*""# <r:@R> => alloc_node(AstNodeType::String, l, r),
+    <l:@L> r#"[-]?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?"# <r:@R> => alloc_node(AstNodeType::Number, l, r),
+    <l:@L> "true" <r:@R> => alloc_node(AstNodeType::True, l, r),
+    <l:@L> "false" <r:@R> => alloc_node(AstNodeType::False, l, r),
+    <l:@L> "null" <r:@R> => alloc_node(AstNodeType::Null, l, r),
+};
+
+Object: usize = {
+    <l:@L> "{" "}" <r:@R> => alloc_node(AstNodeType::Object, l, r),
+    "{" <members:Members> "}" => members,
+};
+
+Members: usize = {
+    <member:Member> => {
+        let object = alloc_node(AstNodeType::Object, 0, 0);
+        append_child(object, member);
+        object
+    },
+    <members:Members> "," <member:Member> => {
+        append_child(members, member);
+        members
+    },
+};
+
+Member: usize = {
+    // The key contributes its span only, exactly like Bison: no key node is
+    // built, the member spans key through value and owns the value.
+    <l:@L> r#""([^"\\]|\\.)*""# ":" <value:Value> <r:@R> => {
+        let member = alloc_node(AstNodeType::Member, l, r);
+        append_child(member, value);
+        member
+    },
+};
+
+Array: usize = {
+    <l:@L> "[" "]" <r:@R> => alloc_node(AstNodeType::Array, l, r),
+    "[" <values:Values> "]" => values,
+};
+
+Values: usize = {
+    <value:Value> => {
+        let array = alloc_node(AstNodeType::Array, 0, 0);
+        append_child(array, value);
+        array
+    },
+    <values:Values> "," <value:Value> => {
+        append_child(values, value);
+        values
+    },
+};

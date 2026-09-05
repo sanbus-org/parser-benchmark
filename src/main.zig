@@ -40,6 +40,7 @@ extern fn arena_destroy(arena: ?*anyopaque) void;
 extern fn print_ast_summary() void;
 
 extern fn benchmark_lalrpop(ptr: [*]const u8, len: usize) bool;
+extern fn benchmark_lalrpop_ast(ptr: [*]const u8, len: usize) bool;
 extern fn benchmark_simdjson_validate(ptr: [*]const u8, len: usize) bool;
 extern fn benchmark_simdjson_dom(ptr: [*]const u8, len: usize) bool;
 extern fn benchmark_nom(ptr: [*]const u8, len: usize) bool;
@@ -233,7 +234,7 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
     @memcpy(file_content_padded[0..file_content.len], file_content);
     @memset(file_content_padded[file_content.len..], 0);
 
-    var results: [16]Result = undefined;
+    var results: [17]Result = undefined;
     var result_count: usize = 0;
 
     // 1. Benchmark Tree-sitter (CST mode)
@@ -342,7 +343,24 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
         result_count += 1;
     }
 
-    // 7. Benchmark simdjson Validate (Non-AST mode)
+    // 7. Benchmark LALRPOP (AST mode)
+    {
+        const elapsed_ns = timeBestNs(init, benchmark_lalrpop_ast, .{ file_content.ptr, file_content.len }) catch
+            return error.LalrpopAstParseFailed;
+        const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
+        const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
+
+        results[result_count] = .{
+            .name = "LALRPOP (Rust)",
+            .mode = "AST",
+            .mbps = mbps,
+            .duration_ns = elapsed_ns,
+            .parsed_bytes = file_content.len,
+        };
+        result_count += 1;
+    }
+
+    // 8. Benchmark simdjson Validate (Non-AST mode)
     {
         const elapsed_ns = timeBestNs(init, benchmark_simdjson_validate, .{ file_content_padded.ptr, file_content.len }) catch
             return error.SimdjsonValidationFailed;
@@ -359,7 +377,7 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
         result_count += 1;
     }
 
-    // 8. Benchmark simdjson DOM (AST mode)
+    // 9. Benchmark simdjson DOM (AST mode)
     {
         const elapsed_ns = timeBestNs(init, benchmark_simdjson_dom, .{ file_content_padded.ptr, file_content.len }) catch
             return error.SimdjsonDomParseFailed;
@@ -376,7 +394,7 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
         result_count += 1;
     }
 
-    // 9. Benchmark Nom (AST mode)
+    // 10. Benchmark Nom (AST mode)
     {
         const elapsed_ns = timeBestNs(init, benchmark_nom, .{ file_content.ptr, file_content.len }) catch
             return error.NomParseFailed;
@@ -393,7 +411,7 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
         result_count += 1;
     }
 
-    // 10. Benchmark RapidJSON DOM (AST mode)
+    // 11. Benchmark RapidJSON DOM (AST mode)
     {
         const elapsed_ns = timeBestNs(init, benchmark_rapidjson_dom, .{ file_content.ptr, file_content.len }) catch
             return error.RapidjsonDomParseFailed;
@@ -410,7 +428,7 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
         result_count += 1;
     }
 
-    // 11. Benchmark RapidJSON SAX (Non-AST mode)
+    // 12. Benchmark RapidJSON SAX (Non-AST mode)
     {
         const elapsed_ns = timeBestNs(init, benchmark_rapidjson_sax, .{ file_content.ptr, file_content.len }) catch
             return error.RapidjsonSaxParseFailed;
@@ -427,7 +445,7 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
         result_count += 1;
     }
 
-    // 12-15. Benchmark Galley LL/LR with and without AST construction.
+    // 13-16. Benchmark Galley LL/LR with and without AST construction.
     results[result_count] = try benchmarkGalley(
         benchmark_galley_ll_no_ast_create,
         benchmark_galley_ll_no_ast_parse,
@@ -465,7 +483,7 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
     );
     result_count += 1;
 
-    // 16. Benchmark yyjson DOM (AST mode)
+    // 17. Benchmark yyjson DOM (AST mode)
     {
         const elapsed_ns = timeBestNs(init, benchmark_yyjson_dom, .{ file_content.ptr, file_content.len }) catch
             return error.YyjsonParseFailed;
