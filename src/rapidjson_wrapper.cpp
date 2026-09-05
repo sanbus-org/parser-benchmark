@@ -4,7 +4,9 @@
 
 extern "C" bool benchmark_rapidjson_dom(const char *ptr, size_t len) {
     rapidjson::Document d;
-    d.Parse(ptr, len);
+    rapidjson::MemoryStream ss(ptr, len);
+    // Validate UTF-8 like the other unicode-checking parsers (default flags skip it).
+    d.ParseStream<rapidjson::kParseValidateEncodingFlag>(ss);
     return !d.HasParseError();
 }
 
@@ -29,5 +31,5 @@ extern "C" bool benchmark_rapidjson_sax(const char *ptr, size_t len) {
     rapidjson::Reader reader;
     rapidjson::MemoryStream ss(ptr, len);
     NullHandler handler;
-    return reader.Parse(ss, handler);
+    return reader.Parse<rapidjson::kParseValidateEncodingFlag>(ss, handler);
 }

@@ -32,6 +32,113 @@ pub struct AstNode {
     pub next_sibling: Option<usize>,
 }
 
+/// Strict JSON string-content check over a complete `"..."` token, mirroring
+/// Galley's unicode grammar and the Flex lexer: raw bytes limited to tab/CR/
+/// LF/VT/FF plus printable ASCII except `"` and `\`, well-formed UTF-8
+/// sequences, and `\` + one of `"/bfnrt` or `u` + 4 hex digits. Both LALRPOP
+/// grammars call it, so No-AST and AST lex identical work. (Input is `&str`,
+/// so multi-byte content is valid UTF-8 by construction; the structural scan
+/// still runs to keep the work comparable.)
+pub fn validate_json_string(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    if bytes.len() < 2 || bytes[0] != b'"' || bytes[bytes.len() - 1] != b'"' {
+        return false;
+    }
+    // Take n content bytes starting at i; false if they would overrun the
+    // closing quote.
+    let end = bytes.len() - 1;
+    let mut i = 1;
+    while i < end {
+        let take = |i: usize, n: usize| i + n <= end;
+        match bytes[i] {
+            0x09..=0x0D | 0x20..=0x21 | 0x23..=0x5B | 0x5D..=0x7E => i += 1,
+            b'\\' => {
+                i += 1;
+                if i >= end {
+                    return false;
+                }
+                match bytes[i] {
+                    b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => i += 1,
+                    b'u' => {
+                        if !take(i + 1, 4)
+                            || !bytes[i + 1..i + 5].iter().all(|b| b.is_ascii_hexdigit())
+                        {
+                            return false;
+                        }
+                        i += 5;
+                    }
+                    _ => return false,
+                }
+            }
+            0xC2..=0xDF => {
+                if !take(i + 1, 1) || !(0x80..=0xBF).contains(&bytes[i + 1]) {
+                    return false;
+                }
+                i += 2;
+            }
+            0xE0 => {
+                if !take(i + 1, 2)
+                    || !(0xA0..=0xBF).contains(&bytes[i + 1])
+                    || !(0x80..=0xBF).contains(&bytes[i + 2])
+                {
+                    return false;
+                }
+                i += 3;
+            }
+            0xE1..=0xEC | 0xEE..=0xEF => {
+                if !take(i + 1, 2)
+                    || !(0x80..=0xBF).contains(&bytes[i + 1])
+                    || !(0x80..=0xBF).contains(&bytes[i + 2])
+                {
+                    return false;
+                }
+                i += 3;
+            }
+            0xED => {
+                if !take(i + 1, 2)
+                    || !(0x80..=0x9F).contains(&bytes[i + 1])
+                    || !(0x80..=0xBF).contains(&bytes[i + 2])
+                {
+                    return false;
+                }
+                i += 3;
+            }
+            0xF0 => {
+                if !take(i + 1, 3)
+                    || !(0x90..=0xBF).contains(&bytes[i + 1])
+                    || !(0x80..=0xBF).contains(&bytes[i + 2])
+                    || !(0x80..=0xBF).contains(&bytes[i + 3])
+                {
+                    return false;
+                }
+                i += 4;
+            }
+            0xF1..=0xF3 => {
+                if !take(i + 1, 3)
+                    || !(0x80..=0xBF).contains(&bytes[i + 1])
+                    || !(0x80..=0xBF).contains(&bytes[i + 2])
+                    || !(0x80..=0xBF).contains(&bytes[i + 3])
+                {
+                    return false;
+                }
+                i += 4;
+            }
+            0xF4 => {
+                if !take(i + 1, 3)
+                    || !(0x80..=0x8F).contains(&bytes[i + 1])
+                    || !(0x80..=0xBF).contains(&bytes[i + 2])
+                    || !(0x80..=0xBF).contains(&bytes[i + 3])
+                {
+                    return false;
+                }
+                i += 4;
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
 thread_local! {
     static AST_ARENA: std::cell::RefCell<Vec<AstNode>> = std::cell::RefCell::new(Vec::new());
 }
@@ -205,5 +312,61 @@ mod tests {
             count += 1;
         }
         assert!(count >= 10, "expected all benchmark datasets");
+    }
+
+    #[test]
+    fn validate_json_string_cases() {
+        for valid in [
+            r#""hello""#,
+            r#""""#,
+            "\"a\\nb\"",
+            "\"\\u0041\"",
+            "\"caf\u{e9}\"",
+            "\"tab\there\"",
+        ] {
+            assert!(validate_json_string(valid), "accept: {valid}");
+        }
+        for invalid in ["\"\\q\"", "\"\\u12\"", "\"abc", "\"a\x01b\"", "\"\u{7f}\""] {
+            assert!(!validate_json_string(invalid), "reject: {invalid:?}");
+        }
+    }
+
+    fn dataset_paths() -> Vec<std::path::PathBuf> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../datasets");
+        let mut entries: Vec<_> = std::fs::read_dir(&dir)
+            .expect("datasets dir")
+            .map(|e| e.expect("dir entry").path())
+            .filter(|p| p.extension().map(|e| e == "json").unwrap_or(false))
+            .collect();
+        entries.sort();
+        assert!(entries.len() >= 10, "expected all benchmark datasets");
+        entries
+    }
+
+    /// The No-AST entry must accept every benchmark dataset after tightening.
+    #[test]
+    fn lalrpop_no_ast_parses_all_datasets() {
+        for path in dataset_paths() {
+            let input = std::fs::read_to_string(&path).expect("read dataset");
+            let ok = benchmark_lalrpop(input.as_ptr(), input.len());
+            assert!(ok, "failed: {}", path.display());
+        }
+    }
+
+    /// The Nom entry must accept every benchmark dataset after tightening.
+    #[test]
+    fn nom_parses_all_datasets() {
+        for path in dataset_paths() {
+            let input = std::fs::read_to_string(&path).expect("read dataset");
+            let ok = benchmark_nom(input.as_ptr(), input.len());
+            assert!(ok, "failed: {}", path.display());
+        }
+    }
+
+    #[test]
+    fn nom_rejects_bad_escapes() {
+        for bad in ["\"\\q\"", "\"\\u12\"", "\"a\x01b\""] {
+            assert!(!benchmark_nom(bad.as_ptr(), bad.len()), "reject: {bad:?}");
+        }
     }
 }

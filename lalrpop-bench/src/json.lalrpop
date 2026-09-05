@@ -39,7 +39,13 @@ Values: () = {
 };
 
 String: () = {
-    r#""([^"\\]|\\.)*""# => (),
+    <s:r#""([^"\\]|\\.)*""#> =>? {
+        if crate::validate_json_string(s) {
+            Ok(())
+        } else {
+            Err(lalrpop_util::ParseError::User { error: "invalid string content" })
+        }
+    },
 };
 
 Number: () = {

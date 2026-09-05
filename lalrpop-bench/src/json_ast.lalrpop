@@ -19,7 +19,13 @@ pub JSON: usize = {
 Value: usize = {
     Object => <>,
     Array => <>,
-    <l:@L> r#""([^"\\]|\\.)*""# <r:@R> => alloc_node(AstNodeType::String, l, r),
+    <l:@L> <s:r#""([^"\\]|\\.)*""#> <r:@R> =>? {
+        if crate::validate_json_string(s) {
+            Ok(alloc_node(AstNodeType::String, l, r))
+        } else {
+            Err(lalrpop_util::ParseError::User { error: "invalid string content" })
+        }
+    },
     <l:@L> r#"[-]?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?"# <r:@R> => alloc_node(AstNodeType::Number, l, r),
     <l:@L> "true" <r:@R> => alloc_node(AstNodeType::True, l, r),
     <l:@L> "false" <r:@R> => alloc_node(AstNodeType::False, l, r),
@@ -46,10 +52,14 @@ Members: usize = {
 Member: usize = {
     // The key contributes its span only, exactly like Bison: no key node is
     // built, the member spans key through value and owns the value.
-    <l:@L> r#""([^"\\]|\\.)*""# ":" <value:Value> <r:@R> => {
-        let member = alloc_node(AstNodeType::Member, l, r);
-        append_child(member, value);
-        member
+    <l:@L> <s:r#""([^"\\]|\\.)*""#> ":" <value:Value> <r:@R> =>? {
+        if crate::validate_json_string(s) {
+            let member = alloc_node(AstNodeType::Member, l, r);
+            append_child(member, value);
+            Ok(member)
+        } else {
+            Err(lalrpop_util::ParseError::User { error: "invalid string content" })
+        }
     },
 };
 

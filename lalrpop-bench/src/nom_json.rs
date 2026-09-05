@@ -1,7 +1,7 @@
 use nom::{
     branch::alt,
-    bytes::complete::{escaped, is_not, tag, take_while},
-    character::complete::{anychar, char},
+    bytes::complete::{escaped, is_not, tag, take_while, take_while_m_n},
+    character::complete::{char, one_of},
     combinator::{cut, map, opt, recognize, value},
     error::{context, ContextError, ParseError},
     multi::separated_list0,
@@ -27,8 +27,29 @@ fn sp<'a, E: ParseError<&'a str>>(i: &'a str) -> IResult<&'a str, &'a str, E> {
     take_while(move |c| chars.contains(c))(i)
 }
 
+/// Raw bytes allowed unescaped in strings: everything except `"`, `\` and the
+/// C0 controls Galley rejects (it lets `\t\n\r\x0b\x0c` through raw, as here).
+/// Input is already `&str`, so multi-byte content is valid UTF-8 by construction.
+const NORMAL_EXCLUDED: &str = "\\\"\u{0}\u{1}\u{2}\u{3}\u{4}\u{5}\u{6}\u{7}\u{8}\u{E}\u{F}\u{10}\u{11}\u{12}\u{13}\u{14}\u{15}\u{16}\u{17}\u{18}\u{19}\u{1A}\u{1B}\u{1C}\u{1D}\u{1E}\u{1F}\u{7F}";
+
+/// Strict escape body: one of `"/bfnrt` or `u` plus exactly 4 hex digits,
+/// matching Galley's unicode grammar (surrogate halves need no pairing there).
+fn escape_body<'a, E: ParseError<&'a str>>(i: &'a str) -> IResult<&'a str, (), E> {
+    alt((
+        value((), one_of("\"\\/bfnrt")),
+        value(
+            (),
+            preceded(
+                tag("u"),
+                take_while_m_n(4, 4, |c: char| c.is_ascii_hexdigit()),
+            ),
+        ),
+    ))
+    .parse(i)
+}
+
 fn parse_str<'a, E: ParseError<&'a str>>(i: &'a str) -> IResult<&'a str, &'a str, E> {
-    recognize(opt(escaped(is_not("\\\""), '\\', anychar)))(i)
+    recognize(opt(escaped(is_not(NORMAL_EXCLUDED), '\\', escape_body)))(i)
 }
 
 fn boolean<'a, E: ParseError<&'a str>>(input: &'a str) -> IResult<&'a str, bool, E> {
