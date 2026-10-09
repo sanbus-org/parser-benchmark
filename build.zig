@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
     const optimized_c_flags = &.{ "-O3", "-DNDEBUG", "-std=c99" };
 
     const root_module = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
+        .root_source_file = b.path("json/main.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -61,7 +61,7 @@ pub fn build(b: *std.Build) void {
     const generator_tool = b.addExecutable(.{
         .name = "generate-galley-json",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/generate_galley_json.zig"),
+            .root_source_file = b.path("json/generate_galley_json.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -92,22 +92,22 @@ pub fn build(b: *std.Build) void {
     });
 
     // Tree-sitter JSON Parser
-    exe.root_module.addIncludePath(b.path("tree-sitter-json/src"));
+    exe.root_module.addIncludePath(b.path("json/tree-sitter-json/src"));
     exe.root_module.addCSourceFile(.{
-        .file = b.path("tree-sitter-json/src/parser.c"),
+        .file = b.path("json/tree-sitter-json/src/parser.c"),
         .flags = optimized_c_flags,
     });
 
     // Generate the Bison/Flex parser into Zig's cache.
     const generate_bison_parser = b.addSystemCommand(&.{
         "sh",
-        "scripts/generate-bison-parser.sh",
+        "json/scripts/generate-bison-parser.sh",
     });
     const parser_c = generate_bison_parser.addOutputFileArg("parser.c");
     const parser_h = generate_bison_parser.addOutputFileArg("parser.h");
     const lexer_c = generate_bison_parser.addOutputFileArg("lexer.c");
-    generate_bison_parser.addFileArg(b.path("src/json.y"));
-    generate_bison_parser.addFileArg(b.path("src/json.l"));
+    generate_bison_parser.addFileArg(b.path("json/json.y"));
+    generate_bison_parser.addFileArg(b.path("json/json.l"));
 
     exe.root_module.addIncludePath(parser_h.dirname());
     exe.root_module.addCSourceFile(.{
@@ -120,21 +120,21 @@ pub fn build(b: *std.Build) void {
     });
 
     // yyjson DOM parser.
-    exe.root_module.addIncludePath(b.path("yyjson/src"));
+    exe.root_module.addIncludePath(b.path("json/yyjson/src"));
     exe.root_module.addCSourceFile(.{
-        .file = b.path("yyjson/src/yyjson.c"),
+        .file = b.path("json/yyjson/src/yyjson.c"),
         .flags = optimized_c_flags,
     });
     exe.root_module.addCSourceFile(.{
-        .file = b.path("src/yyjson_wrapper.c"),
+        .file = b.path("json/yyjson_wrapper.c"),
         .flags = optimized_c_flags,
     });
 
     // LALRPOP (Rust) static library
     const cargo_build = b.addSystemCommand(&.{ "cargo", "build", "--release" });
-    cargo_build.setCwd(b.path("lalrpop-bench"));
+    cargo_build.setCwd(b.path("json/lalrpop-bench"));
     exe.step.dependOn(&cargo_build.step);
-    exe.root_module.addObjectFile(b.path("lalrpop-bench/target/release/liblalrpop_bench.a"));
+    exe.root_module.addObjectFile(b.path("json/lalrpop-bench/target/release/liblalrpop_bench.a"));
     if (target.result.os.tag == .linux) {
         exe.root_module.linkSystemLibrary("gcc_s", .{});
     }
@@ -148,13 +148,13 @@ pub fn build(b: *std.Build) void {
         "-fPIC",
         "-Wno-deprecated-literal-operator",
         "-Wno-nullability-completeness",
-        "-Isrc",
-        "-Isimdjson/singleheader",
-        "-Irapidjson/include",
+        "-Ijson",
+        "-Ijson/simdjson/singleheader",
+        "-Ijson/rapidjson/include",
     });
-    build_cpplib.addFileArg(b.path("simdjson/singleheader/simdjson.cpp"));
-    build_cpplib.addFileArg(b.path("src/simdjson_wrapper.cpp"));
-    build_cpplib.addFileArg(b.path("src/rapidjson_wrapper.cpp"));
+    build_cpplib.addFileArg(b.path("json/simdjson/singleheader/simdjson.cpp"));
+    build_cpplib.addFileArg(b.path("json/simdjson_wrapper.cpp"));
+    build_cpplib.addFileArg(b.path("json/rapidjson_wrapper.cpp"));
     const cpplib_name = switch (target.result.os.tag) {
         .macos => "libparsers.dylib",
         .linux => "libparsers.so",
@@ -237,11 +237,11 @@ fn addGalleyVariant(
     const procedures_source: std.Build.LazyPath = if (local_root) |root|
         .{ .cwd_relative = b.fmt("{s}/languages/json-unicode/procedures.zig", .{root}) }
     else
-        b.path("src/galley_procedures.zig");
+        b.path("json/galley_procedures.zig");
     const error_messages_source: std.Build.LazyPath = if (local_root) |root|
         .{ .cwd_relative = b.fmt("{s}/languages/json-unicode/{s}_error_messages.zig", .{ root, variant.parser_type }) }
     else
-        b.path("src/galley_error_messages.zig");
+        b.path("json/galley_error_messages.zig");
     // The generated parser reads `config.ast` at compile time, so each
     // variant needs its own config. Values mirror Galley's own benchmark
     // matrix (no procedures, no terminal AST, no error recovery); only `ast`
@@ -261,7 +261,7 @@ fn addGalleyVariant(
             \\pub const error_messages = .{{}};
             \\
         , .{if (variant.with_ast) "true" else "false"}));
-    } else b.path("src/galley_config.zig");
+    } else b.path("json/galley_config.zig");
     const generate = b.addRunArtifact(generator_tool);
     generate.addFileArg(grammar_source);
     generate.addArg(variant.parser_type);
@@ -333,7 +333,7 @@ fn addGalleyVariant(
     parser.addImport("galley", runtime);
 
     const adapter = b.createModule(.{
-        .root_source_file = b.path("src/galley_adapter.zig"),
+        .root_source_file = b.path("json/galley_adapter.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -354,16 +354,16 @@ const ExternalDataset = struct {
 };
 
 const external_datasets = [_]ExternalDataset{
-    .{ .name = "canada", .path = "datasets/canada.json" },
-    .{ .name = "citm_catalog", .path = "datasets/citm_catalog.json" },
-    .{ .name = "fgo", .path = "datasets/fgo.json" },
-    .{ .name = "github_events", .path = "datasets/github_events.json" },
-    .{ .name = "gsoc-2018", .path = "datasets/gsoc-2018.json" },
-    .{ .name = "lottie", .path = "datasets/lottie.json" },
-    .{ .name = "otfcc", .path = "datasets/otfcc.json" },
-    .{ .name = "poet", .path = "datasets/poet.json" },
-    .{ .name = "twitter", .path = "datasets/twitter.json" },
-    .{ .name = "twitterescaped", .path = "datasets/twitterescaped.json" },
+    .{ .name = "canada", .path = "datasets/json/canada.json" },
+    .{ .name = "citm_catalog", .path = "datasets/json/citm_catalog.json" },
+    .{ .name = "fgo", .path = "datasets/json/fgo.json" },
+    .{ .name = "github_events", .path = "datasets/json/github_events.json" },
+    .{ .name = "gsoc-2018", .path = "datasets/json/gsoc-2018.json" },
+    .{ .name = "lottie", .path = "datasets/json/lottie.json" },
+    .{ .name = "otfcc", .path = "datasets/json/otfcc.json" },
+    .{ .name = "poet", .path = "datasets/json/poet.json" },
+    .{ .name = "twitter", .path = "datasets/json/twitter.json" },
+    .{ .name = "twitterescaped", .path = "datasets/json/twitterescaped.json" },
 };
 
 fn externalDataset(argument: []const u8) ?ExternalDataset {
@@ -384,7 +384,7 @@ fn addExternalDataset(
 ) void {
     const fetch_dataset = b.addSystemCommand(&.{
         "sh",
-        "scripts/fetch-dataset.sh",
+        "json/scripts/fetch-dataset.sh",
         dataset.name,
     });
     run_cmd.step.dependOn(&fetch_dataset.step);

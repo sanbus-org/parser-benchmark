@@ -556,14 +556,14 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const default_datasets = [_][]const u8{
-        "datasets/canada.json",
-        "datasets/citm_catalog.json",
-        "datasets/github_events.json",
-        "datasets/gsoc-2018.json",
-        "datasets/lottie.json",
-        "datasets/poet.json",
-        "datasets/twitter.json",
-        "datasets/twitterescaped.json",
+        "datasets/json/canada.json",
+        "datasets/json/citm_catalog.json",
+        "datasets/json/github_events.json",
+        "datasets/json/gsoc-2018.json",
+        "datasets/json/lottie.json",
+        "datasets/json/poet.json",
+        "datasets/json/twitter.json",
+        "datasets/json/twitterescaped.json",
     };
     for (default_datasets) |file_path| {
         try benchmarkFile(init, file_path);

@@ -1,6 +1,10 @@
 # Parser Benchmark
 
-Cross-parser JSON benchmark harness used by Galley. The harness owns its
+Cross-language parser benchmark harnesses used by Galley. Each language keeps
+its exclusive adapters, grammars, and datasets under its own directory
+(`json/`, `python/`); shared infrastructure (build dispatcher, Tree-sitter
+core, the pinned `galley` dependency, ignored `datasets/` and
+`benchmark_results/` roots) stays top-level. The harness owns its
 adapters and parser definitions; Galley, yyjson, and third-party parser
 implementations are pinned Git submodules.
 
