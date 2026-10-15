@@ -3,7 +3,7 @@ const generator = @import("galley_generator");
 
 pub fn main(init: std.process.Init) !void {
     const args = init.minimal.args.vector;
-    if (args.len != 5) return error.InvalidArguments;
+    if (args.len != 6) return error.InvalidArguments;
 
     const grammar_path = std.mem.span(args[1]);
     const parser_type = generator.ParserType.parse(std.mem.span(args[2])) orelse
@@ -14,7 +14,13 @@ pub fn main(init: std.process.Init) !void {
         false
     else
         return error.InvalidAstMode;
-    const output_path = std.mem.span(args[4]);
+    const with_procedures = if (std.mem.eql(u8, std.mem.span(args[4]), "procedures"))
+        true
+    else if (std.mem.eql(u8, std.mem.span(args[4]), "no-procedures"))
+        false
+    else
+        return error.InvalidProceduresMode;
+    const output_path = std.mem.span(args[5]);
     const grammar = try std.Io.Dir.cwd().readFileAlloc(
         init.io,
         grammar_path,
@@ -29,7 +35,7 @@ pub fn main(init: std.process.Init) !void {
         parser_type,
         .{
             .with_ast = with_ast,
-            .with_procedures = false,
+            .with_procedures = with_procedures,
             .with_error_recovery = false,
             .with_position_tracking = false,
             .with_input_streaming = false,

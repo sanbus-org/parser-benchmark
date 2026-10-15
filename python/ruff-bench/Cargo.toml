@@ -2,8 +2,15 @@
 name = "ruff_bench"
 version = "0.0.0"
 edition = "2021"
+
+[lib]
+name = "ruff_bench"
+path = "src/lib.rs"
+crate-type = ["staticlib"]
+
 [dependencies]
 ruff_python_parser = { git = "https://github.com/astral-sh/ruff", tag = "0.16.0" }
+
 [profile.release]
 opt-level = 3
 lto = "fat"

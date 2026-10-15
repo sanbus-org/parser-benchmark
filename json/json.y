@@ -93,6 +93,13 @@ static inline void *arena_alloc(Arena *a, size_t size) {
     return ptr;
 }
 
+// Makes every block empty again, keeping the blocks, so repeated parses reuse
+// one arena instead of allocating and freeing it each time.
+void arena_reset(Arena *a) {
+    for (ArenaBlock *block = a->first; block; block = block->next) block->offset = 0;
+    a->current = a->first;
+}
+
 void arena_destroy(Arena *a) {
     if (a) {
         ArenaBlock *block = a->first;

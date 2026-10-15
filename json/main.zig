@@ -1,26 +1,51 @@
+//! Hand-written C ABI bindings for the slice of the Tree-sitter API this
+//! harness uses. Zig 0.17 removed `@cImport`; these are stable signatures
+//! from `tree_sitter/api.h`. `TSNode` is the only by-value struct: its
+//! field order and widths mirror the header so the ABI matches.
 const std = @import("std");
-const c = @cImport({
-    @cInclude("tree_sitter/api.h");
-});
-extern fn tree_sitter_json() *c.TSLanguage;
+const timing = @import("timing");
 
-fn benchmarkTreeSitter(source: []const u8) bool {
-    const parser = c.ts_parser_new() orelse return false;
-    defer c.ts_parser_delete(parser);
+const timeBestNs = timing.timeBestNs;
+const keepOutcome = timing.keepOutcome;
 
-    if (!c.ts_parser_set_language(parser, tree_sitter_json())) return false;
+const ts = struct {
+    const TSLanguage = opaque {};
+    const TSParser = opaque {};
+    const TSTree = opaque {};
+    const TSNode = extern struct {
+        context: [4]u32,
+        id: ?*const anyopaque,
+        tree: ?*const TSTree,
+    };
 
-    // Benchmark this loop
-    const tree = c.ts_parser_parse_string(
-        parser,
-        null,
-        source.ptr,
-        @intCast(source.len),
-    ) orelse return false;
-    defer c.ts_tree_delete(tree);
+    pub extern "c" fn ts_parser_new() ?*TSParser;
+    pub extern "c" fn ts_parser_delete(self: ?*TSParser) void;
+    pub extern "c" fn ts_parser_set_language(self: ?*TSParser, language: ?*const TSLanguage) bool;
+    pub extern "c" fn ts_parser_parse_string(
+        self: ?*TSParser,
+        old_tree: ?*const TSTree,
+        string: [*]const u8,
+        length: u32,
+    ) ?*TSTree;
+    pub extern "c" fn ts_tree_delete(self: ?*TSTree) void;
+    pub extern "c" fn ts_tree_root_node(self: ?*const TSTree) TSNode;
+    pub extern "c" fn ts_node_end_byte(self: TSNode) u32;
+    pub extern "c" fn ts_node_has_error(self: TSNode) bool;
 
-    const root = c.ts_tree_root_node(tree);
-    return !c.ts_node_has_error(root) and c.ts_node_end_byte(root) == source.len;
+    extern "c" fn tree_sitter_json() *const TSLanguage;
+};
+
+/// One Tree-sitter parse on a long-lived parser. The tree is returned for
+/// the caller to delete after the clock stops; null when the input has
+/// errors or is not fully consumed.
+fn treeSitterParse(parser: *ts.TSParser, source: []const u8) ?*ts.TSTree {
+    const tree = ts.ts_parser_parse_string(parser, null, source.ptr, @intCast(source.len)) orelse return null;
+    const root = ts.ts_tree_root_node(tree);
+    if (ts.ts_node_has_error(root) or ts.ts_node_end_byte(root) != source.len) {
+        ts.ts_tree_delete(tree);
+        return null;
+    }
+    return tree;
 }
 
 extern fn yy_scan_string(str: [*]const u8) ?*anyopaque;
@@ -37,16 +62,20 @@ extern var bison_root_node: ?*anyopaque;
 // Import C Arena functions
 extern fn arena_create(size: usize) ?*anyopaque;
 extern fn arena_destroy(arena: ?*anyopaque) void;
+extern fn arena_reset(arena: ?*anyopaque) void;
 extern fn print_ast_summary() void;
 
 extern fn benchmark_lalrpop(ptr: [*]const u8, len: usize) bool;
 extern fn benchmark_lalrpop_ast(ptr: [*]const u8, len: usize) bool;
 extern fn benchmark_simdjson_validate(ptr: [*]const u8, len: usize) bool;
 extern fn benchmark_simdjson_dom(ptr: [*]const u8, len: usize) bool;
-extern fn benchmark_nom(ptr: [*]const u8, len: usize) bool;
-extern fn benchmark_rapidjson_dom(ptr: [*]const u8, len: usize) bool;
+extern fn benchmark_nom(ptr: [*]const u8, len: usize) ?*anyopaque;
+extern fn benchmark_nom_free(handle: ?*anyopaque) void;
+extern fn benchmark_rapidjson_dom(ptr: [*]const u8, len: usize) ?*anyopaque;
+extern fn benchmark_rapidjson_dom_free(handle: ?*anyopaque) void;
 extern fn benchmark_rapidjson_sax(ptr: [*]const u8, len: usize) bool;
-extern fn benchmark_yyjson_dom(ptr: [*]const u8, len: usize) bool;
+extern fn benchmark_yyjson_dom(ptr: [*]const u8, len: usize) ?*anyopaque;
+extern fn benchmark_yyjson_dom_free(handle: ?*anyopaque) void;
 extern fn benchmark_galley_ll_no_ast_create() ?*anyopaque;
 extern fn benchmark_galley_ll_no_ast_parse(context: ?*anyopaque, ptr: [*]const u8, len: usize) bool;
 extern fn benchmark_galley_ll_no_ast_destroy(context: ?*anyopaque) void;
@@ -60,45 +89,39 @@ extern fn benchmark_galley_lr_ast_create() ?*anyopaque;
 extern fn benchmark_galley_lr_ast_parse(context: ?*anyopaque, ptr: [*]const u8, len: usize) bool;
 extern fn benchmark_galley_lr_ast_destroy(context: ?*anyopaque) void;
 
-fn benchmarkBison(source: [:0]const u8, build_ast: bool, build_advanced_ast: bool, build_payload_ast: bool) bool {
+/// Sets the global Bison tree mode and creates the arena a tree-building mode
+/// fills. Runs once per mode, outside the timing.
+fn bisonConfigure(build_ast: bool, build_advanced_ast: bool, build_payload_ast: bool) void {
+    bison_build_ast = @intFromBool(build_ast);
+    bison_build_advanced_ast = @intFromBool(build_advanced_ast);
+    bison_build_payload_ast = @intFromBool(build_payload_ast);
+    bison_root_node = null;
+    bison_current_arena = if (build_payload_ast or build_advanced_ast)
+        arena_create(128 * 1024 * 1024) // Advanced and payload AST nodes
+    else if (build_ast)
+        arena_create(64 * 1024 * 1024) // Simple AST nodes
+    else
+        null;
+}
+
+fn bisonTeardown() void {
+    if (bison_current_arena) |arena| arena_destroy(arena);
+    bison_current_arena = null;
+}
+
+/// One Bison parse in the mode `bisonConfigure` set up.
+fn bisonParse(source: [:0]const u8, build_tree: bool) bool {
     _ = yy_scan_string(source.ptr) orelse return false;
-
-    if (build_payload_ast) {
-        bison_build_ast = 0;
-        bison_build_advanced_ast = 0;
-        bison_build_payload_ast = 1;
-        bison_current_arena = arena_create(128 * 1024 * 1024); // Allocate 128MB Arena for Payload AST Nodes
-        bison_root_node = null;
-    } else if (build_advanced_ast) {
-        bison_build_ast = 0;
-        bison_build_advanced_ast = 1;
-        bison_build_payload_ast = 0;
-        bison_current_arena = arena_create(128 * 1024 * 1024); // Allocate 128MB Arena for Advanced AST Nodes
-        bison_root_node = null;
-    } else if (build_ast) {
-        bison_build_ast = 1;
-        bison_build_advanced_ast = 0;
-        bison_build_payload_ast = 0;
-        bison_current_arena = arena_create(64 * 1024 * 1024); // Allocate 64MB Arena for Simple AST Nodes
-        bison_root_node = null;
-    } else {
-        bison_build_ast = 0;
-        bison_build_advanced_ast = 0;
-        bison_build_payload_ast = 0;
-        bison_current_arena = null;
-        bison_root_node = null;
-    }
-
-    const parse_succeeded = yyparse() == 0 and
-        (!(build_ast or build_advanced_ast or build_payload_ast) or bison_root_node != null);
-
-    if (build_ast or build_advanced_ast or build_payload_ast) {
-        arena_destroy(bison_current_arena);
-        bison_current_arena = null;
-    }
-
+    bison_root_node = null;
+    const parse_succeeded = yyparse() == 0 and (!build_tree or bison_root_node != null);
     yylex_destroy();
     return parse_succeeded;
+}
+
+/// Empties the arena after the clock stops, so each parse starts on the same
+/// warm memory the way the Galley session reuses its own.
+fn bisonRelease(_: bool) void {
+    if (bison_current_arena) |arena| arena_reset(arena);
 }
 
 const Result = struct {
@@ -108,33 +131,6 @@ const Result = struct {
     duration_ns: i96,
     parsed_bytes: usize,
 };
-
-/// Warmup iterations run untimed before each measurement.
-const warmup_runs: usize = 2;
-/// Timed iterations per parser; the best (shortest) one is reported.
-const measure_runs: usize = 5;
-
-/// Run `parse(args)` untimed `warmup_runs` times, then timed `measure_runs`
-/// times, returning the best (shortest) elapsed time in nanoseconds.
-/// Best-of-N suppresses scheduling and frequency noise; warmup settles
-/// caches, branch predictors, and page faults before timing starts.
-fn timeBestNs(init: std.process.Init, parse: anytype, args: anytype) error{ParseFailed}!i96 {
-    var i: usize = 0;
-    while (i < warmup_runs) : (i += 1) {
-        if (!@call(.auto, parse, args)) return error.ParseFailed;
-    }
-    var best: i96 = std.math.maxInt(i96);
-    i = 0;
-    while (i < measure_runs) : (i += 1) {
-        const start = std.Io.Clock.awake.now(init.io);
-        const ok = @call(.auto, parse, args);
-        const end = std.Io.Clock.awake.now(init.io);
-        if (!ok) return error.ParseFailed;
-        const elapsed_ns = start.durationTo(end).toNanoseconds();
-        if (elapsed_ns < best) best = elapsed_ns;
-    }
-    return best;
-}
 
 fn benchmarkGalley(
     comptime create: fn () callconv(.c) ?*anyopaque,
@@ -147,7 +143,7 @@ fn benchmarkGalley(
     const session = create() orelse return error.GalleySessionInitFailed;
     defer destroy(session);
 
-    const elapsed_ns = timeBestNs(init, parse, .{ session, file_content.ptr, file_content.len }) catch
+    const elapsed_ns = timeBestNs(init, parse, keepOutcome, .{ session, file_content.ptr, file_content.len }) catch
         return error.GalleyParseFailed;
     const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
     return .{
@@ -239,7 +235,10 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 1. Benchmark Tree-sitter (CST mode)
     {
-        const elapsed_ns = timeBestNs(init, benchmarkTreeSitter, .{file_content}) catch
+        const parser = ts.ts_parser_new() orelse return error.TreeSitterInitFailed;
+        defer ts.ts_parser_delete(parser);
+        if (!ts.ts_parser_set_language(parser, ts.tree_sitter_json())) return error.TreeSitterInitFailed;
+        const elapsed_ns = timeBestNs(init, treeSitterParse, ts.ts_tree_delete, .{ parser, file_content }) catch
             return error.TreeSitterParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
@@ -255,12 +254,14 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
     }
 
     // Need null-terminated string for Flex
-    const file_content_z = try init.gpa.dupeZ(u8, file_content);
+    const file_content_z = try init.gpa.dupeSentinel(u8, file_content, 0);
     defer init.gpa.free(file_content_z);
 
     // 2. Benchmark Bison (Non-AST mode)
     {
-        const elapsed_ns = timeBestNs(init, benchmarkBison, .{ file_content_z, false, false, false }) catch
+        bisonConfigure(false, false, false);
+        defer bisonTeardown();
+        const elapsed_ns = timeBestNs(init, bisonParse, bisonRelease, .{ file_content_z, false }) catch
             return error.BisonParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
@@ -277,7 +278,9 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 3. Benchmark Bison (Simple AST-building mode)
     {
-        const elapsed_ns = timeBestNs(init, benchmarkBison, .{ file_content_z, true, false, false }) catch
+        bisonConfigure(true, false, false);
+        defer bisonTeardown();
+        const elapsed_ns = timeBestNs(init, bisonParse, bisonRelease, .{ file_content_z, true }) catch
             return error.BisonParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
@@ -294,7 +297,9 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 4. Benchmark Bison (Advanced AST-building mode)
     {
-        const elapsed_ns = timeBestNs(init, benchmarkBison, .{ file_content_z, false, true, false }) catch
+        bisonConfigure(false, true, false);
+        defer bisonTeardown();
+        const elapsed_ns = timeBestNs(init, bisonParse, bisonRelease, .{ file_content_z, true }) catch
             return error.BisonParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
@@ -311,7 +316,9 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 5. Benchmark Bison (Advanced AST with Payload mode)
     {
-        const elapsed_ns = timeBestNs(init, benchmarkBison, .{ file_content_z, false, false, true }) catch
+        bisonConfigure(false, false, true);
+        defer bisonTeardown();
+        const elapsed_ns = timeBestNs(init, bisonParse, bisonRelease, .{ file_content_z, true }) catch
             return error.BisonParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
@@ -328,7 +335,7 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 6. Benchmark LALRPOP (Non-AST mode)
     {
-        const elapsed_ns = timeBestNs(init, benchmark_lalrpop, .{ file_content.ptr, file_content.len }) catch
+        const elapsed_ns = timeBestNs(init, benchmark_lalrpop, keepOutcome, .{ file_content.ptr, file_content.len }) catch
             return error.LalrpopParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
@@ -345,7 +352,7 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 7. Benchmark LALRPOP (AST mode)
     {
-        const elapsed_ns = timeBestNs(init, benchmark_lalrpop_ast, .{ file_content.ptr, file_content.len }) catch
+        const elapsed_ns = timeBestNs(init, benchmark_lalrpop_ast, keepOutcome, .{ file_content.ptr, file_content.len }) catch
             return error.LalrpopAstParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
@@ -362,7 +369,7 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 8. Benchmark simdjson Validate (Non-AST mode)
     {
-        const elapsed_ns = timeBestNs(init, benchmark_simdjson_validate, .{ file_content_padded.ptr, file_content.len }) catch
+        const elapsed_ns = timeBestNs(init, benchmark_simdjson_validate, keepOutcome, .{ file_content_padded.ptr, file_content.len }) catch
             return error.SimdjsonValidationFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
@@ -379,7 +386,7 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 9. Benchmark simdjson DOM (AST mode)
     {
-        const elapsed_ns = timeBestNs(init, benchmark_simdjson_dom, .{ file_content_padded.ptr, file_content.len }) catch
+        const elapsed_ns = timeBestNs(init, benchmark_simdjson_dom, keepOutcome, .{ file_content_padded.ptr, file_content.len }) catch
             return error.SimdjsonDomParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
@@ -396,7 +403,7 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 10. Benchmark Nom (AST mode)
     {
-        const elapsed_ns = timeBestNs(init, benchmark_nom, .{ file_content.ptr, file_content.len }) catch
+        const elapsed_ns = timeBestNs(init, benchmark_nom, benchmark_nom_free, .{ file_content.ptr, file_content.len }) catch
             return error.NomParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
@@ -413,7 +420,7 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 11. Benchmark RapidJSON DOM (AST mode)
     {
-        const elapsed_ns = timeBestNs(init, benchmark_rapidjson_dom, .{ file_content.ptr, file_content.len }) catch
+        const elapsed_ns = timeBestNs(init, benchmark_rapidjson_dom, benchmark_rapidjson_dom_free, .{ file_content.ptr, file_content.len }) catch
             return error.RapidjsonDomParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
@@ -430,7 +437,7 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 12. Benchmark RapidJSON SAX (Non-AST mode)
     {
-        const elapsed_ns = timeBestNs(init, benchmark_rapidjson_sax, .{ file_content.ptr, file_content.len }) catch
+        const elapsed_ns = timeBestNs(init, benchmark_rapidjson_sax, keepOutcome, .{ file_content.ptr, file_content.len }) catch
             return error.RapidjsonSaxParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
@@ -485,7 +492,7 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // 17. Benchmark yyjson DOM (AST mode)
     {
-        const elapsed_ns = timeBestNs(init, benchmark_yyjson_dom, .{ file_content.ptr, file_content.len }) catch
+        const elapsed_ns = timeBestNs(init, benchmark_yyjson_dom, benchmark_yyjson_dom_free, .{ file_content.ptr, file_content.len }) catch
             return error.YyjsonParseFailed;
         const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
         const mbps = @as(f64, @floatFromInt(file_content.len)) / (1024 * 1024) / duration_secs;
@@ -509,7 +516,7 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
 
     // Print the final table in descending throughput order.
     std.debug.print("\nDataset: {s}\n", .{file_path});
-    std.debug.print("Timing: {d} warmup + best of {d} runs\n", .{ warmup_runs, measure_runs });
+    std.debug.print("Timing: {d} warmup + best of {d} runs\n", .{ timing.warmup_runs, timing.measure_runs });
     std.debug.print(
         "Legend: {s}general-purpose{s}  {s}JSON-specific{s}  {s}Galley{s}  ▣ SIMD  🌳 AST\n",
         .{

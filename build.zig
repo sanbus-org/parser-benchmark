@@ -5,6 +5,12 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const optimized_c_flags = &.{ "-O3", "-DNDEBUG", "-std=c99" };
 
+    const timing_module = b.createModule(.{
+        .root_source_file = b.path("timing.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const root_module = b.createModule(.{
         .root_source_file = b.path("json/main.zig"),
         .target = target,
@@ -13,8 +19,10 @@ pub fn build(b: *std.Build) void {
         .link_libcpp = false,
     });
 
+    root_module.addImport("timing", timing_module);
+
     const exe = b.addExecutable(.{
-        .name = "benchmark",
+        .name = "benchmark-json",
         .root_module = root_module,
     });
 
@@ -32,8 +40,8 @@ pub fn build(b: *std.Build) void {
         // next invocation. When the link is missing or stale, refresh it and
         // stop with instructions instead of silently benchmarking the pinned
         // tree.
-        const root = b.build_root.handle;
-        var link_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const root = b.root.root_dir.handle;
+        var link_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         const current_len = root.readLink(b.graph.io, "galley-local", &link_buf) catch null;
         const want = std.mem.trimEnd(u8, local_path, "/");
         const current: ?[]const u8 = if (current_len) |len| link_buf[0..len] else null;
@@ -59,9 +67,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const generator_tool = b.addExecutable(.{
-        .name = "generate-galley-json",
+        .name = "generate-galley",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("json/generate_galley_json.zig"),
+            .root_source_file = b.path("generate_galley.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -73,10 +81,10 @@ pub fn build(b: *std.Build) void {
         }),
     });
     inline for ([_]GalleyVariant{
-        .{ .name = "galley-ll-no-ast", .symbol_suffix = "ll_no_ast", .parser_type = "ll", .with_ast = false },
-        .{ .name = "galley-ll-ast", .symbol_suffix = "ll_ast", .parser_type = "ll", .with_ast = true },
-        .{ .name = "galley-lr-no-ast", .symbol_suffix = "lr_no_ast", .parser_type = "lr", .with_ast = false },
-        .{ .name = "galley-lr-ast", .symbol_suffix = "lr_ast", .parser_type = "lr", .with_ast = true },
+        .{ .name = "galley-ll-no-ast", .symbol_suffix = "ll_no_ast", .parser_type = "ll", .with_ast = false, .repo_json_stubs = true },
+        .{ .name = "galley-ll-ast", .symbol_suffix = "ll_ast", .parser_type = "ll", .with_ast = true, .repo_json_stubs = true },
+        .{ .name = "galley-lr-no-ast", .symbol_suffix = "lr_no_ast", .parser_type = "lr", .with_ast = false, .repo_json_stubs = true },
+        .{ .name = "galley-lr-ast", .symbol_suffix = "lr_ast", .parser_type = "lr", .with_ast = true, .repo_json_stubs = true },
     }) |variant| {
         root_module.addObject(
             addGalleyVariant(b, target, optimize, galley, generator_tool, variant),
@@ -140,7 +148,7 @@ pub fn build(b: *std.Build) void {
     }
 
     // Build simdjson + RapidJSON as a shared library using system clang++.
-    // This avoids triggering Zig 0.16's broken libcxx sub-compilation on macOS.
+    // This avoids depending on Zig's bundled C++ standard library.
     const build_cpplib = b.addSystemCommand(&.{"clang++"});
     build_cpplib.addArgs(&.{
         "-O3",
@@ -173,31 +181,91 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addRPath(cpplib.dirname());
     exe.root_module.linkSystemLibrary("parsers", .{});
 
-    b.installArtifact(exe);
-
-    const run_cmd = b.addRunArtifact(exe);
-    run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        if (args.len > 0) {
-            for (args) |arg| {
-                if (externalDataset(arg)) |dataset| {
-                    addExternalDataset(b, run_cmd, dataset);
-                } else {
-                    run_cmd.addArg(arg);
-                }
-            }
-        } else {
-            for (external_datasets) |dataset| {
-                addExternalDataset(b, run_cmd, dataset);
-            }
-        }
-    } else {
-        for (external_datasets) |dataset| {
-            addExternalDataset(b, run_cmd, dataset);
-        }
+    // Python benchmark: Galley LL (No AST / AST) from `languages/python`
+    // plus the Ruff static library. CPython runs in a spawned `python3`
+    // (see python/cpython_bench.py), so nothing links libpython here.
+    const python_root_module = b.createModule(.{
+        .root_source_file = b.path("python/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    python_root_module.addImport("timing", timing_module);
+    const python_exe = b.addExecutable(.{
+        .name = "benchmark-python",
+        .root_module = python_root_module,
+    });
+    inline for ([_]GalleyVariant{
+        .{
+            .name = "python-galley-ll-no-ast",
+            .symbol_suffix = "ll_no_ast",
+            .parser_type = "ll",
+            .with_ast = false,
+            .language = "python",
+            .validate_utf8 = true,
+            .indentation_syntax = true,
+            .newline_after_block_end = true,
+        },
+        .{
+            .name = "python-galley-ll-ast",
+            .symbol_suffix = "ll_ast",
+            .parser_type = "ll",
+            .with_ast = true,
+            .language = "python",
+            .validate_utf8 = true,
+            .indentation_syntax = true,
+            .newline_after_block_end = true,
+            .procedures = true,
+        },
+    }) |variant| {
+        python_root_module.addObject(
+            addGalleyVariant(b, target, optimize, galley, generator_tool, variant),
+        );
     }
 
-    const run_step = b.step("run", "Run the benchmark");
+    // Tree-sitter core plus the Python grammar and its external scanner.
+    python_root_module.addIncludePath(b.path("tree-sitter/lib/include"));
+    python_root_module.addIncludePath(b.path("tree-sitter/lib/src"));
+    python_root_module.addCSourceFile(.{
+        .file = b.path("tree-sitter/lib/src/lib.c"),
+        .flags = &.{ "-O3", "-DNDEBUG", "-std=c99", "-D_GNU_SOURCE" },
+    });
+    python_root_module.addIncludePath(b.path("python/tree-sitter-python/src"));
+    python_root_module.addCSourceFiles(.{
+        .root = b.path("python/tree-sitter-python/src"),
+        .files = &.{ "parser.c", "scanner.c" },
+        .flags = optimized_c_flags,
+    });
+
+    // Ruff (Rust) static library, mirroring the LALRPOP wiring above.
+    const ruff_cargo_build = b.addSystemCommand(&.{ "cargo", "build", "--release" });
+    ruff_cargo_build.setCwd(b.path("python/ruff-bench"));
+    python_exe.step.dependOn(&ruff_cargo_build.step);
+    python_exe.root_module.addObjectFile(b.path("python/ruff-bench/target/release/libruff_bench.a"));
+    if (target.result.os.tag == .linux) {
+        python_exe.root_module.linkSystemLibrary("gcc_s", .{});
+    }
+
+    b.installArtifact(exe);
+    b.installArtifact(python_exe);
+
+    // Zig 0.17 no longer hands the arguments after `--` to build() (`b.args`
+    // is gone); a run step receives them through `addPassthruArgs`. Dataset
+    // selection therefore lives in the wrapper scripts: the top-level
+    // dispatcher routes each argument to the JSON or Python wrapper by
+    // language (dataset name or file extension), each wrapper fetches the
+    // named standard datasets, and the matching benchmark runs with the
+    // resolved paths. With no arguments both languages run their full
+    // default sets:
+    //   zig build -Doptimize=ReleaseFast run -- twitter canada
+    //   zig build -Doptimize=ReleaseFast run -- pydoc datasets/python/ast.py
+    const run_cmd = b.addSystemCommand(&.{ "sh", "scripts/run-benchmark.sh" });
+    run_cmd.addArtifactArg(exe);
+    run_cmd.addArtifactArg(python_exe);
+    run_cmd.addPassthruArgs();
+    run_cmd.step.dependOn(b.getInstallStep());
+
+    const run_step = b.step("run", "Run the JSON and Python benchmarks");
     run_step.dependOn(&run_cmd.step);
 }
 
@@ -216,6 +284,27 @@ const GalleyVariant = struct {
     symbol_suffix: []const u8,
     parser_type: []const u8,
     with_ast: bool,
+    /// Directory under Galley's `languages/` providing the grammar.
+    language: []const u8 = "json-unicode",
+    /// The historical JSON pinned flow reads this repo's stub
+    /// procedures/error-messages modules instead of the language tree's;
+    /// JSON local flow and every other language use the tree's own files.
+    repo_json_stubs: bool = false,
+    /// Check that the whole input is valid UTF-8 inside every timed parse.
+    /// For grammars that leave some bytes unchecked (comments and raw
+    /// strings are captured verbatim), so Galley pays for the same encoding
+    /// check the rival parsers do.
+    validate_utf8: bool = false,
+    /// Indentation-aware lexing (Python-style significant indentation).
+    indentation_syntax: bool = false,
+    /// Emit a control byte after each dedent; requires indentation_syntax
+    /// and must stay on for grammars whose statement lists continue across
+    /// dedents (Python).
+    newline_after_block_end: bool = false,
+    /// Generate the parser with procedure-hook call sites and set
+    /// `procedures` in the generated config (Python's AST hooks flatten
+    /// lists and resolve expression structure).
+    procedures: bool = false,
 };
 
 fn addGalleyVariant(
@@ -228,44 +317,56 @@ fn addGalleyVariant(
 ) *std.Build.Step.Compile {
     const local_root = localGalleyRoot(b);
     const grammar_source: std.Build.LazyPath = if (local_root) |root|
-        .{ .cwd_relative = b.fmt("{s}/languages/json-unicode/{s}.grm", .{ root, variant.parser_type }) }
+        .{ .cwd_relative = b.fmt("{s}/languages/{s}/{s}.grm", .{ root, variant.language, variant.parser_type }) }
     else
         galley.path(b.fmt(
-            "languages/json-unicode/{s}.grm",
-            .{variant.parser_type},
+            "languages/{s}/{s}.grm",
+            .{ variant.language, variant.parser_type },
         ));
     const procedures_source: std.Build.LazyPath = if (local_root) |root|
-        .{ .cwd_relative = b.fmt("{s}/languages/json-unicode/procedures.zig", .{root}) }
+        .{ .cwd_relative = b.fmt("{s}/languages/{s}/procedures.zig", .{ root, variant.language }) }
+    else if (variant.repo_json_stubs)
+        b.path("json/galley_procedures.zig")
     else
-        b.path("json/galley_procedures.zig");
+        galley.path(b.fmt("languages/{s}/procedures.zig", .{variant.language}));
     const error_messages_source: std.Build.LazyPath = if (local_root) |root|
-        .{ .cwd_relative = b.fmt("{s}/languages/json-unicode/{s}_error_messages.zig", .{ root, variant.parser_type }) }
+        .{ .cwd_relative = b.fmt("{s}/languages/{s}/{s}_error_messages.zig", .{ root, variant.language, variant.parser_type }) }
+    else if (variant.repo_json_stubs)
+        b.path("json/galley_error_messages.zig")
     else
-        b.path("json/galley_error_messages.zig");
-    // The generated parser reads `config.ast` at compile time, so each
+        galley.path(b.fmt(
+            "languages/{s}/{s}_error_messages.zig",
+            .{ variant.language, variant.parser_type },
+        ));
+    // The generated parser reads the config module at compile time, so each
     // variant needs its own config. Values mirror Galley's own benchmark
-    // matrix (no procedures, no terminal AST, no error recovery); only `ast`
-    // varies. The pinned flow keeps its single shared config file.
-    const config_source: std.Build.LazyPath = if (local_root != null) blk: {
-        const config_wf = b.addWriteFiles();
-        break :blk config_wf.add("config.zig", b.fmt(
-            \\pub const ast = {s};
-            \\pub const procedures = false;
-            \\pub const allow_no_ast_tree_procedures = false;
-            \\pub const require_reduction_procedures = false;
-            \\pub const error_recovery = false;
-            \\pub const ast_for_terminals = false;
-            \\pub const position_tracking: ?bool = null;
-            \\pub const input_streaming = false;
-            \\pub const indentation_syntax = false;
-            \\pub const error_messages = .{{}};
-            \\
-        , .{if (variant.with_ast) "true" else "false"}));
-    } else b.path("json/galley_config.zig");
+    // matrix (no terminal AST, no error recovery); only `ast`, `procedures`,
+    // and the language's lexer flags vary between variants.
+    const config_wf = b.addWriteFiles();
+    const config_source = config_wf.add("config.zig", b.fmt(
+        \\pub const ast = {s};
+        \\pub const procedures = {s};
+        \\pub const allow_no_ast_tree_procedures = false;
+        \\pub const require_reduction_procedures = false;
+        \\pub const error_recovery = false;
+        \\pub const ast_for_terminals = false;
+        \\pub const position_tracking: ?bool = null;
+        \\pub const input_streaming = false;
+        \\pub const indentation_syntax = {s};
+        \\pub const newline_after_block_end = {s};
+        \\pub const error_messages = .{{}};
+        \\
+    , .{
+        if (variant.with_ast) "true" else "false",
+        if (variant.procedures) "true" else "false",
+        if (variant.indentation_syntax) "true" else "false",
+        if (variant.newline_after_block_end) "true" else "false",
+    }));
     const generate = b.addRunArtifact(generator_tool);
     generate.addFileArg(grammar_source);
     generate.addArg(variant.parser_type);
     generate.addArg(if (variant.with_ast) "ast" else "no-ast");
+    generate.addArg(if (variant.procedures) "procedures" else "no-procedures");
     const parser_source = generate.addOutputFileArg(b.fmt(
         "_{s}-{s}-parser.zig",
         .{ variant.parser_type, if (variant.with_ast) "ast" else "no-ast" },
@@ -290,6 +391,7 @@ fn addGalleyVariant(
         "destroy_symbol",
         b.fmt("benchmark_galley_{s}_destroy", .{variant.symbol_suffix}),
     );
+    adapter_options.addOption(bool, "validate_utf8", variant.validate_utf8);
     const procedures = b.createModule(.{
         .root_source_file = procedures_source,
         .target = target,
@@ -324,6 +426,7 @@ fn addGalleyVariant(
             .{ .name = "error_messages", .module = error_messages },
             .{ .name = "parser", .module = parser },
             .{ .name = "runtime_options", .module = runtime_options.createModule() },
+            .{ .name = "signals", .module = galley.module("galley_signals") },
         },
     });
     runtime.addImport("galley", runtime);
@@ -333,7 +436,7 @@ fn addGalleyVariant(
     parser.addImport("galley", runtime);
 
     const adapter = b.createModule(.{
-        .root_source_file = b.path("json/galley_adapter.zig"),
+        .root_source_file = b.path("galley_adapter.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -346,47 +449,4 @@ fn addGalleyVariant(
         .name = variant.name,
         .root_module = adapter,
     });
-}
-
-const ExternalDataset = struct {
-    name: []const u8,
-    path: []const u8,
-};
-
-const external_datasets = [_]ExternalDataset{
-    .{ .name = "canada", .path = "datasets/json/canada.json" },
-    .{ .name = "citm_catalog", .path = "datasets/json/citm_catalog.json" },
-    .{ .name = "fgo", .path = "datasets/json/fgo.json" },
-    .{ .name = "github_events", .path = "datasets/json/github_events.json" },
-    .{ .name = "gsoc-2018", .path = "datasets/json/gsoc-2018.json" },
-    .{ .name = "lottie", .path = "datasets/json/lottie.json" },
-    .{ .name = "otfcc", .path = "datasets/json/otfcc.json" },
-    .{ .name = "poet", .path = "datasets/json/poet.json" },
-    .{ .name = "twitter", .path = "datasets/json/twitter.json" },
-    .{ .name = "twitterescaped", .path = "datasets/json/twitterescaped.json" },
-};
-
-fn externalDataset(argument: []const u8) ?ExternalDataset {
-    for (external_datasets) |dataset| {
-        if (std.mem.eql(u8, argument, dataset.name) or
-            std.mem.eql(u8, argument, dataset.path))
-        {
-            return dataset;
-        }
-    }
-    return null;
-}
-
-fn addExternalDataset(
-    b: *std.Build,
-    run_cmd: *std.Build.Step.Run,
-    dataset: ExternalDataset,
-) void {
-    const fetch_dataset = b.addSystemCommand(&.{
-        "sh",
-        "json/scripts/fetch-dataset.sh",
-        dataset.name,
-    });
-    run_cmd.step.dependOn(&fetch_dataset.step);
-    run_cmd.addArg(dataset.path);
 }

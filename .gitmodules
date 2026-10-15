@@ -16,3 +16,6 @@
 [submodule "galley"]
 	path = galley
 	url = https://github.com/sanbus-org/galley.git
+[submodule "python/tree-sitter-python"]
+	path = python/tree-sitter-python
+	url = https://github.com/tree-sitter/tree-sitter-python.git

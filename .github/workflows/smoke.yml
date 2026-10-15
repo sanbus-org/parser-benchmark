@@ -22,7 +22,7 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
-          version: 0.16.0
+          version: 0.17.0
 
       - name: Install native build tools
         run: |
@@ -33,4 +33,6 @@ jobs:
         run: |
           smoke_input="$RUNNER_TEMP/parser-benchmark-smoke.json"
           printf '%s\n' '{"array": [true, false, null, 0]}' > "$smoke_input"
-          zig build -Doptimize=ReleaseFast run -- "$smoke_input"
+          smoke_python="$RUNNER_TEMP/parser-benchmark-smoke.py"
+          printf '%s\n' 'def f(x):' '    return x + 1' > "$smoke_python"
+          zig build -Doptimize=ReleaseFast run -- "$smoke_input" "$smoke_python"

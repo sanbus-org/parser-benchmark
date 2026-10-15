@@ -2,12 +2,23 @@
 #include "rapidjson/reader.h"
 #include "rapidjson/memorystream.h"
 
-extern "C" bool benchmark_rapidjson_dom(const char *ptr, size_t len) {
-    rapidjson::Document d;
+// Returns the parsed document, or null when the input does not parse. The
+// driver frees it with benchmark_rapidjson_dom_free after it stops the clock,
+// so timing covers building the DOM and not tearing it down.
+extern "C" void *benchmark_rapidjson_dom(const char *ptr, size_t len) {
+    auto *document = new rapidjson::Document;
     rapidjson::MemoryStream ss(ptr, len);
     // Validate UTF-8 like the other unicode-checking parsers (default flags skip it).
-    d.ParseStream<rapidjson::kParseValidateEncodingFlag>(ss);
-    return !d.HasParseError();
+    document->ParseStream<rapidjson::kParseValidateEncodingFlag>(ss);
+    if (document->HasParseError()) {
+        delete document;
+        return nullptr;
+    }
+    return document;
+}
+
+extern "C" void benchmark_rapidjson_dom_free(void *document) {
+    delete static_cast<rapidjson::Document *>(document);
 }
 
 struct NullHandler {

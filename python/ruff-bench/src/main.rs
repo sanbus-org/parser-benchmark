@@ -1,4 +1,4 @@
-use ruff_python_parser::{lexer::lex, parse_module, Mode};
+use ruff_python_parser::parse_module;
 use std::time::Instant;
 
 fn measure(label: &str, bytes: usize, iterations: usize, mut run: impl FnMut()) {
@@ -19,11 +19,5 @@ fn main() {
     assert!(parse_module(&source).is_ok());
     measure("ruff 0.16.0 parse_module (AST)", source.len(), iterations, || {
         std::hint::black_box(parse_module(std::hint::black_box(&source)).is_ok());
-    });
-    measure("ruff 0.16.0 lexer only", source.len(), iterations, || {
-        let mut lexer = lex(std::hint::black_box(&source), Mode::Module);
-        let mut tokens = 0usize;
-        while !lexer.next_token().is_eof() { tokens += 1; }
-        std::hint::black_box(tokens);
     });
 }

@@ -235,18 +235,35 @@ pub extern "C" fn benchmark_lalrpop_ast(input_ptr: *const u8, input_len: usize) 
     }
 }
 
+/// Parses to an owned value tree. Returns a handle to it, or null when the
+/// input does not parse. The driver releases the handle with
+/// `benchmark_nom_free` after it stops the clock, so timing covers building
+/// the tree and not dropping it.
 #[no_mangle]
-pub extern "C" fn benchmark_nom(input_ptr: *const u8, input_len: usize) -> bool {
+pub extern "C" fn benchmark_nom(input_ptr: *const u8, input_len: usize) -> *mut std::ffi::c_void {
     let bytes = unsafe { slice::from_raw_parts(input_ptr, input_len) };
 
     let s = match str::from_utf8(bytes) {
         Ok(s) => s,
-        Err(_) => return false,
+        Err(_) => return std::ptr::null_mut(),
     };
 
     match nom_json::root::<()>(s) {
-        Ok((remaining, _)) => remaining.is_empty(),
-        Err(_) => false,
+        Ok((remaining, value)) if remaining.is_empty() => {
+            Box::into_raw(Box::new(value)) as *mut std::ffi::c_void
+        }
+        _ => std::ptr::null_mut(),
+    }
+}
+
+/// Drops a handle returned by `benchmark_nom`.
+///
+/// # Safety
+/// `handle` must be null or a handle not yet released.
+#[no_mangle]
+pub unsafe extern "C" fn benchmark_nom_free(handle: *mut std::ffi::c_void) {
+    if !handle.is_null() {
+        drop(Box::from_raw(handle as *mut nom_json::JsonValue));
     }
 }
 

@@ -13,6 +13,7 @@ fn create() callconv(.c) ?*anyopaque {
 
 fn parse(context: ?*anyopaque, input: [*]const u8, input_len: usize) callconv(.c) bool {
     const session: *galley.Session = @ptrCast(@alignCast(context orelse return false));
+    if (options.validate_utf8 and !std.unicode.utf8ValidateSlice(input[0..input_len])) return false;
     const result = session.parseBytes(input[0..input_len], null) catch return false;
     std.mem.doNotOptimizeAway(result.parsed_bytes);
     return result.parsed_bytes == input_len;

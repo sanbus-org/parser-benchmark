@@ -2,7 +2,7 @@
 set -eu
 
 dataset_name=${1:-}
-dataset_dir=${DATASET_DIR:-datasets}
+dataset_dir=${DATASET_DIR:-datasets/json}
 source_revision=aeefe6a44f37fccf1f9d730766abab9ffea43c6b
 source_root="https://raw.githubusercontent.com/ibireme/yyjson_benchmark/${source_revision}/data/json"
 

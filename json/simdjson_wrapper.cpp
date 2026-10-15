@@ -5,7 +5,9 @@
 // its end, so its result reports structural errors found during traversal.
 extern "C" bool benchmark_simdjson_validate(const char *input_ptr, size_t input_len) {
     auto view = simdjson::padded_string_view(input_ptr, input_len, input_len + simdjson::SIMDJSON_PADDING);
-    simdjson::ondemand::parser parser;
+    // simdjson's parser owns its working buffers and is meant to be reused:
+    // allocating one per call would time its allocation, not the parse.
+    static simdjson::ondemand::parser parser;
     simdjson::ondemand::document doc;
     if (parser.iterate(view).get(doc)) return false;
     return doc.raw_json().error() == simdjson::error_code::SUCCESS;
@@ -15,7 +17,7 @@ extern "C" bool benchmark_simdjson_validate(const char *input_ptr, size_t input_
 // (stage 1 structural indexing + stage 2 full parse → DOM element tree).
 extern "C" bool benchmark_simdjson_dom(const char *input_ptr, size_t input_len) {
     auto view = simdjson::padded_string_view(input_ptr, input_len, input_len + simdjson::SIMDJSON_PADDING);
-    simdjson::dom::parser parser;
+    static simdjson::dom::parser parser;
     simdjson::dom::element doc;
     auto error = parser.parse(view).get(doc);
     return error == simdjson::error_code::SUCCESS;
