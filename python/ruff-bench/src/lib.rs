@@ -8,6 +8,21 @@ use std::ptr;
 use std::slice;
 use std::str;
 
+// The allocator Ruff uses on these targets (see its `ruff` binary and
+// `ruff_benchmark`), so tree allocation costs what it costs in Ruff.
+#[cfg(all(
+    not(target_os = "windows"),
+    not(target_os = "openbsd"),
+    any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "powerpc64",
+        target_arch = "riscv64"
+    )
+))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 /// Full module parse building the AST. Returns a handle owning the parse
 /// result, or null when the source is not valid UTF-8 or does not parse.
 /// The UTF-8 check is part of the timed parse, as Ruff needs a `&str`. The

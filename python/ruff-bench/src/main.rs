@@ -17,7 +17,7 @@ fn main() {
     let source = std::fs::read_to_string(&args[1]).unwrap();
     let iterations: usize = args[2].parse().unwrap();
     assert!(parse_module(&source).is_ok());
-    measure("ruff 0.16.0 parse_module (AST)", source.len(), iterations, || {
+    measure("ruff 0.17.0 parse_module (AST)", source.len(), iterations, || {
         std::hint::black_box(parse_module(std::hint::black_box(&source)).is_ok());
     });
 }

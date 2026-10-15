@@ -11,7 +11,8 @@ Head-to-head Python parsing comparison, mirroring `json/`:
   with the repository's Tree-sitter core): a full parse to a concrete
   syntax tree, on one parser kept across parses.
 - **Ruff** (`ruff-bench/`, pinned `ruff_python_parser` crate built as a
-  C-ABI static library): `parse_module` (AST). Ruff has no parse mode
+  C-ABI static library): `parse_module` (AST), with jemalloc as the
+  allocator as in Ruff's own binary and benchmark. Ruff has no parse mode
   without a tree, so it has no No-AST row.
 - **CPython** (`cpython_bench.py`): `ast.parse` (AST) and `compile`
   (AST + codegen), run in a spawned `python3`.
@@ -51,4 +52,6 @@ parses; grow it by scanning further files through
 `zig-out/bin/benchmark-python` once the grammar advances.
 
 Results go to `benchmark_results/python/`. Requires `python3` on `PATH`
-and `cargo` for the Ruff static library.
+and `cargo` for the Ruff static library. Ruff 0.17.0 needs a newer Rust
+than most distributions ship, so `python/ruff-bench/rust-toolchain.toml` pins
+1.99.0, which `rustup` installs on first use.

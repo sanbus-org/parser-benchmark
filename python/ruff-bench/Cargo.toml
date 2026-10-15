@@ -9,7 +9,12 @@ path = "src/lib.rs"
 crate-type = ["staticlib"]
 
 [dependencies]
-ruff_python_parser = { git = "https://github.com/astral-sh/ruff", tag = "0.16.0" }
+ruff_python_parser = { git = "https://github.com/astral-sh/ruff", tag = "0.17.0" }
+
+# Ruff ships with jemalloc as its allocator on these targets; use it here so
+# the benchmark allocates the way Ruff does.
+[target.'cfg(all(not(target_os = "windows"), not(target_os = "openbsd"), any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "powerpc64", target_arch = "riscv64")))'.dependencies]
+tikv-jemallocator = { version = "0.6.0", default-features = false, features = ["background_threads_runtime_support"] }
 
 [profile.release]
 opt-level = 3
