@@ -3,6 +3,7 @@ zig-out/
 libparsers.dylib
 libparsers.so
 json/lalrpop-bench/target/
+python/lalrpop-bench/target/
 python/ruff-bench/target/
 datasets/json/*.json
 datasets/python/*.py

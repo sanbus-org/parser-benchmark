@@ -5,7 +5,6 @@ use lalrpop_util::lalrpop_mod;
 
 lalrpop_mod!(pub json);
 lalrpop_mod!(pub json_ast);
-pub mod nom_json;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AstNodeType {
@@ -235,38 +234,6 @@ pub extern "C" fn benchmark_lalrpop_ast(input_ptr: *const u8, input_len: usize) 
     }
 }
 
-/// Parses to an owned value tree. Returns a handle to it, or null when the
-/// input does not parse. The driver releases the handle with
-/// `benchmark_nom_free` after it stops the clock, so timing covers building
-/// the tree and not dropping it.
-#[no_mangle]
-pub extern "C" fn benchmark_nom(input_ptr: *const u8, input_len: usize) -> *mut std::ffi::c_void {
-    let bytes = unsafe { slice::from_raw_parts(input_ptr, input_len) };
-
-    let s = match str::from_utf8(bytes) {
-        Ok(s) => s,
-        Err(_) => return std::ptr::null_mut(),
-    };
-
-    match nom_json::root::<()>(s) {
-        Ok((remaining, value)) if remaining.is_empty() => {
-            Box::into_raw(Box::new(value)) as *mut std::ffi::c_void
-        }
-        _ => std::ptr::null_mut(),
-    }
-}
-
-/// Drops a handle returned by `benchmark_nom`.
-///
-/// # Safety
-/// `handle` must be null or a handle not yet released.
-#[no_mangle]
-pub unsafe extern "C" fn benchmark_nom_free(handle: *mut std::ffi::c_void) {
-    if !handle.is_null() {
-        drop(Box::from_raw(handle as *mut nom_json::JsonValue));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,7 +281,7 @@ mod tests {
     /// Every benchmark dataset must parse; inputs are shared with the harness.
     #[test]
     fn ast_parses_all_datasets() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../datasets");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../datasets/json");
         let mut count = 0;
         let mut entries: Vec<_> = std::fs::read_dir(&dir)
             .expect("datasets dir")
@@ -349,7 +316,7 @@ mod tests {
     }
 
     fn dataset_paths() -> Vec<std::path::PathBuf> {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../datasets");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../datasets/json");
         let mut entries: Vec<_> = std::fs::read_dir(&dir)
             .expect("datasets dir")
             .map(|e| e.expect("dir entry").path())
@@ -367,23 +334,6 @@ mod tests {
             let input = std::fs::read_to_string(&path).expect("read dataset");
             let ok = benchmark_lalrpop(input.as_ptr(), input.len());
             assert!(ok, "failed: {}", path.display());
-        }
-    }
-
-    /// The Nom entry must accept every benchmark dataset after tightening.
-    #[test]
-    fn nom_parses_all_datasets() {
-        for path in dataset_paths() {
-            let input = std::fs::read_to_string(&path).expect("read dataset");
-            let ok = benchmark_nom(input.as_ptr(), input.len());
-            assert!(ok, "failed: {}", path.display());
-        }
-    }
-
-    #[test]
-    fn nom_rejects_bad_escapes() {
-        for bad in ["\"\\q\"", "\"\\u12\"", "\"a\x01b\""] {
-            assert!(!benchmark_nom(bad.as_ptr(), bad.len()), "reject: {bad:?}");
         }
     }
 }

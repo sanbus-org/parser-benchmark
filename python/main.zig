@@ -1,8 +1,8 @@
 //! Head-to-head Python parsing benchmark: Galley LL (No AST / AST),
-//! Tree-sitter (CST), Ruff (AST), and CPython (ast.parse / compile).
-//! Same 2-warmup + best-of-5 methodology and `[Name - Mode]` result
-//! format as `json/main.zig`; CPython runs in a spawned interpreter and
-//! times itself in-process (see `cpython_bench.py`).
+//! Tree-sitter (CST), LALRPOP (AST), Ruff (AST), and CPython
+//! (ast.parse / compile). Same 2-warmup + best-of-5 methodology and
+//! `[Name - Mode]` result format as `json/main.zig`; CPython runs in a
+//! spawned interpreter and times itself in-process (see `cpython_bench.py`).
 const std = @import("std");
 const timing = @import("timing");
 
@@ -59,6 +59,8 @@ fn treeSitterParse(parser: *ts.TSParser, source: []const u8) ?*ts.TSTree {
     return tree;
 }
 
+extern fn benchmark_lalrpop_python_parse_module(ptr: [*]const u8, len: usize) ?*anyopaque;
+extern fn benchmark_lalrpop_python_free(handle: ?*anyopaque) void;
 extern fn benchmark_ruff_parse_module(ptr: [*]const u8, len: usize) ?*anyopaque;
 extern fn benchmark_ruff_free(handle: ?*anyopaque) void;
 
@@ -205,7 +207,7 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
     // Every timed parse consumes the input repeated enough times to reach
     // min_parse_bytes, so the measured run lasts long enough for stable
     // best-of-5 timings. CPython repeats identically (the count is passed
-    // to cpython_bench.py), so all six adapters see the same effective
+    // to cpython_bench.py), so all seven adapters see the same effective
     // input.
     const repeats = if (file_content.len == 0) 1 else (min_parse_bytes + file_content.len - 1) / file_content.len;
     const input = try init.gpa.alloc(u8, file_content.len * repeats);
@@ -214,7 +216,7 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
         @memcpy(input[i * file_content.len ..][0..file_content.len], file_content);
     }
 
-    var results: [6]Result = undefined;
+    var results: [7]Result = undefined;
     var result_count: usize = 0;
 
     // 1. Galley LL (No AST mode)
@@ -258,7 +260,22 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
         result_count += 1;
     }
 
-    // 4. Ruff full parse (AST mode).
+    // 4. LALRPOP full parse (AST mode).
+    {
+        const elapsed_ns = timeBestNs(init, benchmark_lalrpop_python_parse_module, benchmark_lalrpop_python_free, .{ input.ptr, input.len }) catch
+            return error.LalrpopPythonParseFailed;
+        const duration_secs = @as(f64, @floatFromInt(elapsed_ns)) / 1e9;
+        results[result_count] = .{
+            .name = "LALRPOP (Rust)",
+            .mode = "AST",
+            .mbps = @as(f64, @floatFromInt(input.len)) / (1024 * 1024) / duration_secs,
+            .duration_ns = elapsed_ns,
+            .parsed_bytes = input.len,
+        };
+        result_count += 1;
+    }
+
+    // 5. Ruff full parse (AST mode).
     {
         const elapsed_ns = timeBestNs(init, benchmark_ruff_parse_module, benchmark_ruff_free, .{ input.ptr, input.len }) catch
             return error.RuffParseFailed;
@@ -273,11 +290,11 @@ fn benchmarkFile(init: std.process.Init, file_path: []const u8) !void {
         result_count += 1;
     }
 
-    // 5. CPython ast.parse (AST mode)
+    // 6. CPython ast.parse (AST mode)
     results[result_count] = try benchmarkCPython(init, file_path, "ast", repeats);
     result_count += 1;
 
-    // 6. CPython compile (AST + codegen mode)
+    // 7. CPython compile (AST + codegen mode)
     results[result_count] = try benchmarkCPython(init, file_path, "compile", repeats);
     result_count += 1;
 

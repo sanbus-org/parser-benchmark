@@ -181,9 +181,10 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addRPath(cpplib.dirname());
     exe.root_module.linkSystemLibrary("parsers", .{});
 
-    // Python benchmark: Galley LL (No AST / AST) from `languages/python`
-    // plus the Ruff static library. CPython runs in a spawned `python3`
-    // (see python/cpython_bench.py), so nothing links libpython here.
+    // Python benchmark: Galley LL (No AST / AST), the LALRPOP shared
+    // library, the Ruff static library, and Tree-sitter. CPython runs in a
+    // spawned `python3` (see python/cpython_bench.py), so nothing links
+    // libpython here.
     const python_root_module = b.createModule(.{
         .root_source_file = b.path("python/main.zig"),
         .target = target,
@@ -205,6 +206,7 @@ pub fn build(b: *std.Build) void {
             .validate_utf8 = true,
             .indentation_syntax = true,
             .newline_after_block_end = true,
+            .inlining_cap = 0,
         },
         .{
             .name = "python-galley-ll-ast",
@@ -216,6 +218,7 @@ pub fn build(b: *std.Build) void {
             .indentation_syntax = true,
             .newline_after_block_end = true,
             .procedures = true,
+            .inlining_cap = 0,
         },
     }) |variant| {
         python_root_module.addObject(
@@ -242,6 +245,17 @@ pub fn build(b: *std.Build) void {
     ruff_cargo_build.setCwd(b.path("python/ruff-bench"));
     python_exe.step.dependOn(&ruff_cargo_build.step);
     python_exe.root_module.addObjectFile(b.path("python/ruff-bench/target/release/libruff_bench.a"));
+
+    // LALRPOP (Rust) shared library for RustPython's Python grammar. Ruff is
+    // a staticlib, and linking a second Rust staticlib would duplicate
+    // `_rust_eh_personality`, so this adapter is built as a cdylib.
+    const lalrpop_python_cargo_build = b.addSystemCommand(&.{ "cargo", "build", "--release" });
+    lalrpop_python_cargo_build.setCwd(b.path("python/lalrpop-bench"));
+    python_exe.step.dependOn(&lalrpop_python_cargo_build.step);
+    const lalrpop_python_lib_dir = b.path("python/lalrpop-bench/target/release");
+    python_exe.root_module.addLibraryPath(lalrpop_python_lib_dir);
+    python_exe.root_module.addRPath(lalrpop_python_lib_dir);
+    python_exe.root_module.linkSystemLibrary("lalrpop_python_bench", .{});
     if (target.result.os.tag == .linux) {
         python_exe.root_module.linkSystemLibrary("gcc_s", .{});
     }
@@ -305,6 +319,9 @@ const GalleyVariant = struct {
     /// `procedures` in the generated config (Python's AST hooks flatten
     /// lists and resolve expression structure).
     procedures: bool = false,
+    /// Maximum inlining cost for generated LL parsers, mirroring the
+    /// language's own `config.zig` (LR parsers ignore it).
+    inlining_cap: usize = 1500,
 };
 
 fn addGalleyVariant(
@@ -352,6 +369,8 @@ fn addGalleyVariant(
         \\pub const ast_for_terminals = false;
         \\pub const position_tracking: ?bool = null;
         \\pub const input_streaming = false;
+        \\pub const fold_decisions = true;
+        \\pub const inlining_cap: ?usize = {d};
         \\pub const indentation_syntax = {s};
         \\pub const newline_after_block_end = {s};
         \\pub const error_messages = .{{}};
@@ -359,6 +378,7 @@ fn addGalleyVariant(
     , .{
         if (variant.with_ast) "true" else "false",
         if (variant.procedures) "true" else "false",
+        variant.inlining_cap,
         if (variant.indentation_syntax) "true" else "false",
         if (variant.newline_after_block_end) "true" else "false",
     }));

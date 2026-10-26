@@ -95,24 +95,25 @@ The rows still do different work, so read a ratio between tools as an
 estimate, not a measurement of equal work:
 
 - **Different trees.** Galley builds a generic node tree of spans with no
-  decoded values. Ruff builds a typed AST with decoded values, a token list
-  and error lists. Tree-sitter builds a concrete tree of every node. CPython
-  builds Python `ast` objects, and `compile` adds code generation. Bison,
-  LALRPOP, Nom and the JSON libraries each differ again.
+  decoded values. LALRPOP's Python adapter and Ruff build typed ASTs with
+  decoded values, and Ruff also returns tokens and error lists. Tree-sitter
+  builds a concrete tree of every node. CPython builds Python `ast` objects,
+  and `compile` adds code generation. Bison and the JSON libraries each
+  differ again.
 - **Memory reuse.** Galley and Bison reuse one arena between parses, and
-  their trees are valid only until the next parse. Ruff, CPython, Nom,
-  RapidJSON and yyjson allocate a new tree each time because the caller owns
-  it, and Ruff has no way to reuse its memory.
+  their trees are valid only until the next parse. LALRPOP's Python adapter,
+  Ruff, CPython, RapidJSON and yyjson allocate a new tree each time because
+  the caller owns it, and Ruff has no way to reuse its memory.
 - **Language coverage.** Galley's Python grammar parses a subset (see
-  `python/README.md`). Ruff, CPython and Tree-sitter parse full Python, and
-  Ruff also recovers from errors.
+  `python/README.md`). LALRPOP's RustPython grammar, Ruff, CPython and
+  Tree-sitter parse full Python, and Ruff also recovers from errors.
 - **Extra passes.** Galley's Python AST row runs a procedure that resolves
   operator precedence, which the other tools do inside their parsers.
 - **No-AST rows.** Galley's and Bison's no-AST modes have no rival in Python,
   where no other tool has a parse-only mode. In JSON, simdjson's Validate row
   is the closest match.
-- **Encoding checks.** Ruff, CPython and Galley's Python adapter reject
-  invalid UTF-8. Tree-sitter works on bytes and does not check.
+- **Encoding checks.** LALRPOP, Ruff, CPython and Galley's Python adapter
+  reject invalid UTF-8. Tree-sitter works on bytes and does not check.
 - **Per-call costs left in.** Flex copies its input and rebuilds its buffer on
   every parse.
 - **One run each.** Results are the best of 5 on one machine and one input,
